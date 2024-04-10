@@ -33,7 +33,7 @@ logger.addHandler(file_handler)
 last_image_generated_time = 0
 
 #Path to config file
-configPath = "Configlocalai.json"
+configPath = "Config.json"
 
 # class for ratelimiting using a token bucket
 class TokenBucket:
@@ -100,7 +100,6 @@ bot = discord.Client(intents=intents)  # Pass the intents argument during initia
 @bot.event
 async def on_ready():
 	print('Logged in as {0}'.format(bot.user))
-
 # ---------------------------- handling message events from discord
 @bot.event
 async def on_message(message):
@@ -115,33 +114,33 @@ async def on_message(message):
 	if message.channel.id in configFile["AllowedChannels"] or isinstance(message.channel, discord.DMChannel):
 		logging.info(f"Message recieved from discord: {message.author.name}: {message.content}")        
 		
-		# Check if bot only responds when called
+	   # Check if bot only responds when called
 		if configFile["OnlyWhenCalled"]:
 			# Check if bot name is in message content or in DM channel or is mentioned
 			if configFile["Name"].lower() in message.content.lower() or isinstance(message.channel, discord.DMChannel) or bot.user in message.mentions:
 				# Check if draw is in message content
-				if not any(word in message.content.lower() for word in configFile["IgnoredWords"]) and ("take" and "selfie") or "draw" in message.content.lower():
+				if not any(word in message.content.lower() for word in configFile["IgnoredWords"]) and ("draw" or "selfie") in message.content.lower():
 					await message.channel.send("Hang on while I get that for you...")
 					# Handle image generation
 					logging.info(f"Detected draw in text {message.content}")
 					await handle_image_generation(message)
 				else:
 					# Handle message processing, removing the detected name from the prompt to avoid confusing the bot too much
-					# message.content = message.content.replace(configFile["Name"].lower(), "")
+					message.content = message.content.replace(configFile["Name"].lower(), "")
 					await handle_message_processing(message)
 			else:
 				# Name was not in content, ignore message
 				return
 		# bot does not only reply when named, proceed with normal message handling
 		else:
-			if not any(word in message.content.lower() for word in configFile["IgnoredWords"]) and ("draw" or "take"and"selfie").lower() in message.content.lower():
+			if not any(word in message.content.lower() for word in configFile["IgnoredWords"]) and ("draw" or "selfie") in message.content.lower():
 				await message.channel.send("Hang on while I get that for you...")
 				# Handle image generation
 				logging.info(f"Detected draw in text {message.content}")
 				await handle_image_generation(message)            
 			else:
 				# check against list of ignored words before acting
-				if not any(word in message.content.lower() for word in configFile["IgnoredWords"]):
+				if not any(word in message.content.lower() for word in configFile["IgnoredWords"]):                
 					# Handle message processing
 					await handle_message_processing(message)
 				
@@ -165,27 +164,22 @@ def comfy_generate_image(comfy_prompt):
 def stable_diffusion_generate_image(prompt):
 	try:
 		response = requests.post(url=configFile["SDURL"], json={
-			"prompt": configFile["SDPositivePrompt"]+ prompt+"|"+configFile["SDNegativePrompt"],
-			"size": configFile["SDSize"],
-			"sampler_index": configFile["SDSampler"],
-			"model": configFile["SDModel"],
-			"style": "natural",
-			"n": 1,
-			"step": configFile["SDSteps"],
-			"response_format": {"type": "b64_json"}
+			"prompt": configFile["SDPositivePrompt"] + prompt,
+			"steps": configFile["SDSteps"],
+			"width": configFile["SDWidth"],
+			"height": configFile["SDHeight"],
+			"negative_prompt": configFile["SDNegativePrompt"],
+			"sampler_index": configFile["SDSampler"]
 		})
 		response.raise_for_status()
 		logging.info("Stable Diffusion API call successful.")
 		
 		# Process the response to get the generated image
 		r = response.json()
-		# logging.info(r)
-		images= r["data"]
-		image_data = images[0]["b64_json"]
-		image = Image.open(io.BytesIO(base64.b64decode(image_data)))
+		image_data = base64.b64decode(r['images'][0])
+		image = Image.open(io.BytesIO(image_data))
 		logging.info("Image generated successfully.")
 		return image
-			
 	except requests.exceptions.RequestException as e:
 		logging.info("An error occurred during the Stable Diffusion API call:", str(e))
 		return None
@@ -196,8 +190,7 @@ async def handle_image_generation(message):
 		logging.info(f"Enough bucket tokens exist, running image generation")
 		try:
 			# Set the user's message as the prompt, removing the word "draw"
-			prompt = configFile["SDPositivePrompt"]+str(message.content.replace("draw", "")+"|"+configFile["SDNegativePrompt"])
-			# Make a POST request to the Stable Diffusion API
+			prompt = message.content.replace("draw", "")
 			if "selfie" in prompt:
 				logging.info("The prompt contains Selfie so we are appending Appearance to the prompt.")
 				image = stable_diffusion_generate_image(configFile["Appearance"]+prompt)
@@ -217,22 +210,21 @@ async def handle_image_generation(message):
 				image = stable_diffusion_generate_image(prompt)
 			""" # Generate the image using the stable diffusion API
 			response = requests.post(url=configFile["SDURL"], json={
-				"prompt": prompt,
-				"model": configFile["SDModel"]
-				"size": configFile["SDSize"],
-				"sampler_index": str(configFile["SDSampler"]),
+				"prompt": configFile["SDPositivePrompt"] + prompt,
 				"steps": configFile["SDSteps"],
-				"style": vivid,
-				"n": 1,
-				"response_format": {"type": "b64_json"}
+				"width": configFile["SDWidth"],
+				"height": configFile["SDHeight"],
+				"negative_prompt": configFile["SDNegativePrompt"],
+				"sampler_index": configFile["SDSampler"],
+				"override_settings" = {
+					"sd_model_checkpoint": configFile["SDModel"]
 				},
 			})
 			r = response.json()
 			image_data = base64.b64decode(r['images'][0])
 			image = Image.open(io.BytesIO(image_data)) """
 
-			# Wait for the image to be generated, also set status to typing
-			logging.info(image)
+			# Wait for the image to be generated, also set status to typing        
 			while not image_generated(image):            
 				async with message.channel.typing():
 					await asyncio.sleep(1)     
@@ -303,7 +295,7 @@ def add_message_to_history(role, user_id, user_name, message_content):
 	total_character_count = sum(len(entry['content']) for entry in user_message_histories[user_id])
 	'''
 	Check if the total character count exceeds 6000, roughly 2k tokens if average word is 3 characters long
-	this is to make sure the total tokens doesnt exceed the 4k limit of the model
+	this is to make sure the totalt tokens doesnt exceed the 4k limit of the model
 	we assume the personality promt takes rought 2k tokens as well
 	if length is exceeded, remove oldes entry until we are below the limit
 	'''

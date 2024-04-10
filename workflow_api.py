@@ -69,7 +69,7 @@ def add_extra_model_paths() -> None:
     """
     Parse the optional extra_model_paths.yaml file and add the parsed paths to the sys.path.
     """
-    from jennifer import load_extra_path_config
+    from lauren20 import load_extra_path_config
 
     extra_model_paths = find_path("extra_model_paths.yaml")
 
