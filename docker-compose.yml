@@ -1,0 +1,9 @@
+version: '3.4'
+
+services:
+  jennifer:
+    image: jennifer
+    container_name: jennifer
+    build:
+      context: .
+      dockerfile: ./Dockerfile

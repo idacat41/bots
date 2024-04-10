@@ -1,0 +1,5 @@
+discord
+openai
+Pillow
+requests
+torch
