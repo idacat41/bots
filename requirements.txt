@@ -1,5 +1,7 @@
-discord
+discord.py[voice]
 openai
 Pillow
 requests
 torch
+numpy
+libnacl

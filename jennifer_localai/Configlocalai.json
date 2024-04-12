@@ -13,7 +13,7 @@
     "SDSize":"512x512",
     "SDSteps":55,
     "SDSampler": "k_dpmpp_2m_sde",
-    "SDModel":"cyberrealistic_classic",
+    "SDModel":"ananimagine_XL",
     "ComfyURL":"http://192.168.128.134:8188/prompt",
     "UseComfy": false,
     "Name":"Jennifer",

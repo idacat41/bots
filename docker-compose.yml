@@ -7,3 +7,16 @@ services:
     build:
       context: .
       dockerfile: ./Dockerfile
+    logging:
+      driver:  json-file
+      options:
+        max-file: "3"   # number of files or file count
+        max-size: '10m'
+    # Grant access to Nvidia GPU (comment out deploy: and below if not using Nvidia variant)
+    deploy:
+        resources:
+          reservations:
+            devices:
+              - driver: nvidia
+                count: all
+                capabilities: [gpu]
