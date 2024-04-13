@@ -93,7 +93,7 @@ def save_message_histories(history_file_name, user_message_histories):
 		logging.error("An error occurred while saving message histories: " + str(e))
 
 # Generate response using OpenAI API
-def generate_response(config, user_id, user_message_histories, additional_instructions=None, prompt=None, include_personality=True):
+def generate_response(config, user_id, user_message_histories, additional_instructions=None, prompt=None, include_personality=True,upscale=False):
 	try:
 		# Initialize OpenAI client with host and API key
 		client = OpenAI(
@@ -165,103 +165,219 @@ def generate_response(config, user_id, user_message_histories, additional_instru
 
 # Handle image generation
 async def handle_image_generation(config, message, bucket, user_message_histories):
+    try:
+        if bucket.consume(1):
+            logging.info(f"Enough bucket tokens exist, running image generation for message: {message.content}")
+            bot_name = config["Name"]
+            prompt, upscale = parse_prompt(message.content, bot_name)
+            
+            # Log the parsed prompt
+            logging.info("Parsed prompt in handle_image_generation:")
+            logging.info(prompt)
+            
+            sd_model_checkpoint, config_model = await check_current_model(config, message)
+            if sd_model_checkpoint:
+                openai_response = await generate_openai_response(config, message.author.id, user_message_histories, prompt, upscale, bot_name)
+                image = await generate_image(config, prompt, upscale)
+                await send_image_response(message, image, openai_response)
+            else:
+                await message.channel.send("Failed to fetch the model. Please try again later.")
+                logging.info("Failed to fetch the model. Skipping image generation.")
+        else:
+            await message.channel.send("I'm busy sketching for you. Please wait until I finish this one before asking for another.")
+            logging.info("Image drawing throttled. Skipping draw request")
+    except Exception as e:
+        logging.error("An error occurred during image generation: " + str(e))
+        pass
+
+def parse_prompt(prompt, bot_name):
+    try:
+        upscale = "--upscale" in prompt
+        appearance_info = " ".join([config.get("Appearance", word) for word in ["selfie", "you"] if word in prompt.lower()])
+        
+        # Log the original prompt
+        logging.info("Original Prompt:")
+        logging.info(prompt)
+        
+        # Remove bot's name from the prompt
+        prompt = re.sub(r'\b{}\b'.format(re.escape(bot_name)), '', prompt, flags=re.IGNORECASE).strip()
+        
+        # Log the prompt after removing bot's name
+        logging.info("Prompt after removing bot's name:")
+        logging.info(prompt)
+        
+        logging.info("Prompt parsed successfully.")
+        return prompt, upscale
+    except Exception as e:
+        logging.error("An error occurred during prompt parsing: " + str(e))
+        return "", False
+
+
+
+async def generate_openai_response(config, user_id, user_message_histories, prompt, upscale, bot_name):
+    try:
+        bot_name = config["Name"].lower()
+        # Remove bot's name from the prompt
+        prompt = prompt.replace(bot_name, "").strip()
+        additional_instructions = [{'role': 'system', 'content': config.get("SDOpenAI", "")}]
+        
+        # Log the parsed prompt
+        logging.info("Parsed prompt in generate_openai_response:")
+        logging.info(prompt)
+        
+        # Check if the bot's name is present in the prompt
+        if bot_name.lower() in prompt.lower():
+            raise ValueError("Bot's name detected in the prompt.")
+        response = generate_response(config, user_id, user_message_histories, upscale=upscale, additional_instructions=additional_instructions, prompt=prompt, include_personality=False)
+        logging.info("OpenAI response generated successfully.")
+        return response
+    except Exception as e:
+        logging.error("An error occurred during OpenAI response generation: " + str(e))
+        return None
+
+
+async def generate_image(config, prompt, upscale):
 	try:
-		if bucket.consume(1):
-			logging.info(f"Enough bucket tokens exist, running image generation for message: {message.content}")
-			prompt = message.content.replace("draw", "")
-			if prompt is not None:
-				logging.info(prompt)
-
-			if "selfie" in prompt or "you" in prompt:
-				logging.info("The prompt contains Selfie so we are appending Appearance to the prompt.")
-				appearance_info = [{'role': 'system', 'content': config.get("Personality", prompt)}]
-				prompt += " " + json.dumps(appearance_info)  # Append appearance information to the prompt
-						
-			additional_instructions = [{'role': 'system', 'content': config.get("SDOpenAI", "")}]  # Fetch additional instructions
-			logging.info(f"Additional instructions for OpenAI: {additional_instructions}")
-
-			# Call generate_response to get OpenAI response
-			logging.info(prompt)
-			openai_response = generate_response(config, message.author.id, user_message_histories, additional_instructions=additional_instructions, prompt=prompt, include_personality=False)
-			logging.info(f"OpenAI response: {openai_response}")
-
-			if openai_response:
-				# Process the response as needed
-				prompt += " " + " ".join(openai_response)
-				logging.info("OpenAi Prompt: %s", prompt)
-
-			if "--upscale" in prompt:
-				prompt = prompt.replace("--upscale", "")
-				# Handle upscaling logic
-				image = stable_diffusion_generate_image(config, prompt)
-			else:
-				# Continue with regular image generation
-				image = stable_diffusion_generate_image(config, prompt)
-
-			while not image_generated(image):
-				async with message.channel.typing():
-					await asyncio.sleep(1)
-
-			image_bytes = io.BytesIO()
-			image.save(image_bytes, format='PNG')
-			image_bytes.seek(0)
-			file = discord.File(image_bytes, filename='output.png')
-
-			if openai_response:
-				# Extract the string from the list
-				openai_response_str = openai_response[0]
-
-				# Remove newlines inside square brackets
-				response_without_newlines = re.sub(r'\[([^]]+)\]', lambda x: x.group(0).replace('\n', ' '), openai_response_str)
-
-				if isinstance(prompt, str):
-					prompt += " " + response_without_newlines
-				else:
-					prompt = " ".join(prompt) + " " + response_without_newlines
-
-				# logging.info("OpenAi Prompt: %s", prompt)
-
-				if isinstance(message.channel, discord.DMChannel):
-					await message.author.send(file=file)
-					await message.author.send(openai_response_str)
-				else:
-					await message.channel.send(file=file)
-					await message.channel.send(openai_response_str)
-
-			else:
-				# If there's no OpenAI response, just send the image
-				if isinstance(message.channel, discord.DMChannel):
-					await message.author.send(file=file)
-				else:
-					await message.channel.send(file=file)
-		else:
-			await message.channel.send("I'm busy sketching for you. Please wait until I finish this one before asking for another.")
-			logging.info("Image drawing throttled. Skipping draw request")
+		image = await stable_diffusion_generate_image(config, prompt, upscale=upscale)
+		logging.info("Image generated successfully.")
+		return image
 	except Exception as e:
 		logging.error("An error occurred during image generation: " + str(e))
-		pass
+		return None
+
+async def send_image_response(message, image, openai_response, prompt=""):
+	try:
+		if openai_response:
+			prompt += " " + " ".join(openai_response)
+			logging.info("OpenAi Prompt: %s", prompt)
+
+		image_bytes = io.BytesIO()
+		image.save(image_bytes, format='PNG')
+		image_bytes.seek(0)
+		file = discord.File(image_bytes, filename='output.png')
+
+		if openai_response:
+			if isinstance(message.channel, discord.DMChannel):
+				await message.author.send(file=file)
+				await message.author.send(openai_response[0])
+			else:
+				await message.channel.send(file=file)
+				await message.channel.send(openai_response[0])
+		else:
+			if isinstance(message.channel, discord.DMChannel):
+				await message.author.send(file=file)
+			else:
+				await message.channel.send(file=file)
+		logging.info("Image response sent successfully.")
+	except Exception as e:
+		logging.error("An error occurred during sending image response: " + str(e))
 
 # Generate image using Stable Diffusion API
-def stable_diffusion_generate_image(config, prompt):
+async def stable_diffusion_generate_image(config, prompt, upscale):
 	try:
-		response = requests.post(url=config["SDURL"], json={
-			"prompt": config["SDPositivePrompt"] + (prompt if isinstance(prompt, str) else " ".join(prompt)),
-			"steps": config["SDSteps"],
-			"width": config["SDWidth"],
-			"height": config["SDHeight"],
-			"negative_prompt": config["SDNegativePrompt"],
-			"sampler_index": config["SDSampler"]
-		})
+		json_payload = prepare_json_payload(config, prompt, upscale)
+		if json_payload:
+			response = make_api_call(config, json_payload)
+			if response:
+				return process_response(response)
+		
+		return None
+	
+	except Exception as e:
+		logging.error("An error occurred during image generation: " + str(e))
+		return None
+
+async def fetch_options(config):
+	try:
+		response = requests.get(url=config["SDURL"] + "/sdapi/v1/options")
 		response.raise_for_status()
-		logging.info("Stable Diffusion API call successful.")
-		r = response.json()
-		image_data = base64.b64decode(r['images'][0])
+		options = response.json()
+		logging.info("Options fetched successfully.")
+		return options
+	except Exception as e:
+		logging.error("An error occurred while fetching options from the Stable Diffusion API: " + str(e))
+		return None
+
+
+async def check_current_model(config, message):
+	try:
+		# Fetch options from the API
+		response = requests.get(url=config["SDURL"] + "/sdapi/v1/options")
+		response.raise_for_status()
+		options = response.json()
+		
+		# Check if the 'sd_model_checkpoint' key exists in the options
+		if 'sd_model_checkpoint' in options:
+			sd_model_checkpoint = options['sd_model_checkpoint']
+			if sd_model_checkpoint != config["SDModel"][0]:
+				logging.warning("Loaded model does not match configured model.")
+				if message:
+					logging.info("Sending message to notify about model mismatch...")
+					if isinstance(message.channel, discord.DMChannel):
+						await message.author.send("Please wait, switching models...")
+					else:
+						await message.channel.send("It may take me a bit of time to draw that picture. Please be patient")
+			else:
+				logging.info("Loaded model matches configured model.")
+			return sd_model_checkpoint, config["SDModel"][0]
+		else:
+			logging.error("No 'sd_model_checkpoint' key found in API options.")
+			return None, None
+	except Exception as e:
+		logging.error("An error occurred while checking current model: " + str(e))
+		return None, None
+
+def prepare_json_payload(config, prompt, upscale):
+	try:
+		json_payload = {
+			"prompt": config.get("SDPositivePrompt") + (prompt if isinstance(prompt, str) else " ".join(prompt)),
+			"steps": config.get("SDSteps"),
+			"width": config.get("SDWidth"),
+			"height": config.get("SDHeight"),
+			"negative_prompt": config.get("SDNegativePrompt"),
+			"sampler_index": config.get("SDSampler"),
+			"cfg_scale": config.get("SDConfig"),
+			"self_attention": "yes",
+			"enable_hr": upscale,
+			"hr_upscaler": "R-ESRGAN 4x+",
+			"hr_prompt": config.get("SDPositivePrompt") + (prompt if isinstance(prompt, str) else " ".join(prompt)),
+			"hr_negative_prompt": config.get("SDNegativePrompt"),
+			"denoising_strength": 0.5,
+			"override_settings_restore_afterwards": False,
+			"override_settings": {
+				"sd_model_checkpoint": config.get("SDModel")[0],
+				"CLIP_stop_at_last_layers": config.get("SDClipSkip")
+	}
+		}
+		logging.info("JSON payload prepared successfully.")
+		return json_payload
+	except Exception as e:
+		logging.error("An error occurred while preparing JSON payload: " + str(e))
+		return None
+
+
+def make_api_call(config, json_payload):
+	try:
+		response = requests.post(url=config.get("SDURL") + "/sdapi/v1/txt2img", json=json_payload)
+		response.raise_for_status()
+		logging.info("API call made successfully.")
+		return response.json()
+	except Exception as e:
+		logging.error("An error occurred during the Stable Diffusion API call: " + str(e))
+		return None
+
+
+def process_response(response):
+	try:
+		image_data = base64.b64decode(response['images'][0])
 		image = Image.open(io.BytesIO(image_data))
 		logging.info("Image generated successfully.")
 		return image
-	except requests.exceptions.RequestException as e:
-		logging.error("An error occurred during the Stable Diffusion API call: " + str(e))
+	except Exception as e:
+		logging.error("An error occurred while processing API response: " + str(e))
 		return None
+
+
 	
 # Check if image is generated
 def image_generated(image):
@@ -377,7 +493,7 @@ async def run_bot(config):
 
 
 if __name__ == "__main__":
-	config_path = "config.json"
+	config_path = "Config.json"
 	config = load_config(config_path)
 	if config:
 		asyncio.run(run_bot(config))
