@@ -23,5 +23,7 @@
 **/obj
 **/secrets.dev.yaml
 **/values.dev.yaml
+**/*_message_histories.json*
+**/*.log*
 LICENSE
 README.md
