@@ -11,6 +11,7 @@ import logging
 import asyncio
 from logging.handlers import TimedRotatingFileHandler
 from PIL import Image
+import re
 
 # Token Bucket class for rate limiting
 class TokenBucket:
@@ -46,7 +47,7 @@ def add_message_to_history(role, user_id, user_name, message_content, user_messa
 			json.dump(user_message_histories, file)
 			logging.info("Message added to history and saved to file successfully.")
 	except Exception as e:
-		logging.error("An error occurred while writing to the JSON file:", str(e))
+		logging.error("An error occurred while writing to the JSON file: " + str(e))
 
 # Load configuration from file
 def load_config(config_path):
@@ -60,21 +61,27 @@ def load_config(config_path):
 	except PermissionError:
 		logging.error("Permission denied. Unable to open Config file.")
 	except Exception as e:
-		logging.error("An error occurred while loading config:", str(e))
+		logging.error("An error occurred while loading config: " + str(e))
 	return None
 
 # Load existing message histories from file
+import os
+
 def load_message_histories(history_file_name):
 	try:
-		with open(history_file_name, 'r') as file:
-			message_histories = json.load(file)
-			return message_histories if message_histories is not None else {}
-	except FileNotFoundError:
-		logging.info("Message history file not found. Creating new one.")
-		return {}
+		if os.path.exists(history_file_name):
+			with open(history_file_name, 'r') as file:
+				message_histories = json.load(file)
+				return message_histories if message_histories is not None else {}
+		else:
+			logging.info("Message history file not found. Creating a new one.")
+			with open(history_file_name, 'w') as file:
+				json.dump({}, file)  # Create a new empty message history file
+			return {}
 	except Exception as e:
-		logging.error("An error occurred while loading message histories:", str(e))
+		logging.error("An error occurred while loading message histories: " + str(e))
 		return {}
+
 
 # Save message histories to file
 def save_message_histories(history_file_name, user_message_histories):
@@ -83,7 +90,7 @@ def save_message_histories(history_file_name, user_message_histories):
 			json.dump(user_message_histories, file)
 		logging.info("Message histories saved to file successfully.")
 	except Exception as e:
-		logging.error("An error occurred while saving message histories:", str(e))
+		logging.error("An error occurred while saving message histories: " + str(e))
 
 # Generate response using OpenAI API
 def generate_response(config, user_id, user_message_histories, additional_instructions=None, prompt=None, include_personality=True):
@@ -152,72 +159,93 @@ def generate_response(config, user_id, user_message_histories, additional_instru
 			return [response_text]
 
 	except Exception as e:
-		logging.error("An error occurred during OpenAI API call:", str(e))
+		logging.error("An error occurred during OpenAI API call: " + str(e))
 		return None
 
 
 # Handle image generation
 async def handle_image_generation(config, message, bucket, user_message_histories):
-    try:
-        if bucket.consume(1):
-            logging.info(f"Enough bucket tokens exist, running image generation for message: {message.content}")
-            prompt = message.content.replace("draw", "")
-            if prompt is not None:
-                logging.info(prompt)
+	try:
+		if bucket.consume(1):
+			logging.info(f"Enough bucket tokens exist, running image generation for message: {message.content}")
+			prompt = message.content.replace("draw", "")
+			if prompt is not None:
+				logging.info(prompt)
 
-            if "selfie" or "you" in prompt:
-                logging.info("The prompt contains Selfie so we are appending Appearance to the prompt.")
-                prompt = config["Personality"] + prompt
+			if "selfie" in prompt or "you" in prompt:
+				logging.info("The prompt contains Selfie so we are appending Appearance to the prompt.")
+				appearance_info = [{'role': 'system', 'content': config.get("Personality", prompt)}]
+				prompt += " " + json.dumps(appearance_info)  # Append appearance information to the prompt
+						
+			additional_instructions = [{'role': 'system', 'content': config.get("SDOpenAI", "")}]  # Fetch additional instructions
+			logging.info(f"Additional instructions for OpenAI: {additional_instructions}")
 
-            additional_instructions = [{'role': 'system', 'content': config.get("SDOpenAI", "")}]  # Fetch additional instructions
-            logging.info(f"Additional instructions for OpenAI: {additional_instructions}")
+			# Call generate_response to get OpenAI response
+			logging.info(prompt)
+			openai_response = generate_response(config, message.author.id, user_message_histories, additional_instructions=additional_instructions, prompt=prompt, include_personality=False)
+			logging.info(f"OpenAI response: {openai_response}")
 
-            # Call generate_response to get OpenAI response
-            logging.info(prompt)
-            openai_response = generate_response(config, message.author.id, user_message_histories, additional_instructions=additional_instructions, prompt=prompt, include_personality=False)
-            logging.info(f"OpenAI response: {openai_response}")
+			if openai_response:
+				# Process the response as needed
+				prompt += " " + " ".join(openai_response)
+				logging.info("OpenAi Prompt: %s", prompt)
 
-            if openai_response:
-                # Process the response as needed
-                prompt += " " + " ".join(openai_response)
-                logging.info("OpenAi Prompt:" + prompt)
+			if "--upscale" in prompt:
+				prompt = prompt.replace("--upscale", "")
+				# Handle upscaling logic
+				image = stable_diffusion_generate_image(config, prompt)
+			else:
+				# Continue with regular image generation
+				image = stable_diffusion_generate_image(config, prompt)
 
-            if "--upscale" in prompt:
-                prompt = prompt.replace("--upscale", "")
-                # Handle upscaling logic
-                image = stable_diffusion_generate_image(config, prompt)
-            else:
-                # Continue with regular image generation
-                image = stable_diffusion_generate_image(config, prompt)
+			while not image_generated(image):
+				async with message.channel.typing():
+					await asyncio.sleep(1)
 
-            while not image_generated(image):
-                async with message.channel.typing():
-                    await asyncio.sleep(1)
+			image_bytes = io.BytesIO()
+			image.save(image_bytes, format='PNG')
+			image_bytes.seek(0)
+			file = discord.File(image_bytes, filename='output.png')
 
-            image_bytes = io.BytesIO()
-            image.save(image_bytes, format='PNG')
-            image_bytes.seek(0)
-            file = discord.File(image_bytes, filename='output.png')
+			if openai_response:
+				# Extract the string from the list
+				openai_response_str = openai_response[0]
 
-            if isinstance(message.channel, discord.DMChannel):
-                await message.author.send(file=file)
-            else:
-                await message.channel.send(file=file)
-        else:
-            await message.channel.send("I'm busy sketching for you. Please wait until I finish this one before asking for another.")
-            logging.info("Image drawing throttled. Skipping draw request")
-    except Exception as e:
-        logging.error("An error occurred during image generation:", str(e))
-        pass
+				# Remove newlines inside square brackets
+				response_without_newlines = re.sub(r'\[([^]]+)\]', lambda x: x.group(0).replace('\n', ' '), openai_response_str)
 
+				if isinstance(prompt, str):
+					prompt += " " + response_without_newlines
+				else:
+					prompt = " ".join(prompt) + " " + response_without_newlines
 
+				# logging.info("OpenAi Prompt: %s", prompt)
 
+				if isinstance(message.channel, discord.DMChannel):
+					await message.author.send(file=file)
+					await message.author.send(openai_response_str)
+				else:
+					await message.channel.send(file=file)
+					await message.channel.send(openai_response_str)
+
+			else:
+				# If there's no OpenAI response, just send the image
+				if isinstance(message.channel, discord.DMChannel):
+					await message.author.send(file=file)
+				else:
+					await message.channel.send(file=file)
+		else:
+			await message.channel.send("I'm busy sketching for you. Please wait until I finish this one before asking for another.")
+			logging.info("Image drawing throttled. Skipping draw request")
+	except Exception as e:
+		logging.error("An error occurred during image generation: " + str(e))
+		pass
 
 # Generate image using Stable Diffusion API
 def stable_diffusion_generate_image(config, prompt):
 	try:
 		response = requests.post(url=config["SDURL"], json={
-			"prompt": config["SDPositivePrompt"] + prompt,
+			"prompt": config["SDPositivePrompt"] + (prompt if isinstance(prompt, str) else " ".join(prompt)),
 			"steps": config["SDSteps"],
 			"width": config["SDWidth"],
 			"height": config["SDHeight"],
@@ -232,7 +260,7 @@ def stable_diffusion_generate_image(config, prompt):
 		logging.info("Image generated successfully.")
 		return image
 	except requests.exceptions.RequestException as e:
-		logging.error("An error occurred during the Stable Diffusion API call:", str(e))
+		logging.error("An error occurred during the Stable Diffusion API call: " + str(e))
 		return None
 	
 # Check if image is generated
@@ -240,7 +268,7 @@ def image_generated(image):
 	try:
 		return image.size[0] > 0 and image.size[1] > 0
 	except Exception as e:
-		logging.error("An error occurred during image generation:", str(e))
+		logging.error("An error occurred during image generation: " + str(e))
 		return False
 
 # Handle message processing
@@ -266,7 +294,7 @@ async def handle_message_processing(config, message, user_message_histories, his
 				# Add a 100ms delay
 				await asyncio.sleep(0.05)
 	except Exception as e:
-		logging.error("An error occurred during message processing:", str(e))
+		logging.error("An error occurred during message processing: " + str(e))
 
 import textwrap
 
@@ -332,7 +360,7 @@ async def run_bot(config):
 							if not any(word in message.content.lower() for word in config["IgnoredWords"]):
 								await handle_message_processing(config, message, user_message_histories, history_file_name)
 			except Exception as e:
-				logging.error("An error occurred during message handling:", str(e))
+				logging.error("An error occurred during message handling: " + str(e))
 
 		await bot.start(config["DiscordToken"])
 
@@ -341,7 +369,7 @@ async def run_bot(config):
 		await bot.close()
 
 	except Exception as e:
-		logging.error("An error occurred during bot execution:", str(e))
+		logging.error("An error occurred during bot execution: " + str(e))
 
 	finally:
 		logging.info("Closing bot...")
@@ -349,9 +377,9 @@ async def run_bot(config):
 
 
 if __name__ == "__main__":
-	config_path = "Config.json"
+	config_path = "config.json"
 	config = load_config(config_path)
 	if config:
 		asyncio.run(run_bot(config))
 	else:
-		logging.error("Failed to load configuration. Bot cannot start.")
+		logging.error("Configuration loading failed. Exiting.")
