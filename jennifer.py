@@ -93,7 +93,7 @@ def save_message_histories(history_file_name, user_message_histories):
 		logging.error("An error occurred while saving message histories: " + str(e))
 
 # Generate response using OpenAI API
-def generate_response(config, user_id, user_message_histories, additional_instructions=None, prompt=None, include_personality=True,upscale=False):
+async def generate_response(config, user_id, user_message_histories, message, additional_instructions=None, prompt=None, include_personality=True, upscale=False):
 	try:
 		# Initialize OpenAI client with host and API key
 		client = OpenAI(
@@ -159,27 +159,36 @@ def generate_response(config, user_id, user_message_histories, additional_instru
 			return [response_text]
 
 	except Exception as e:
+		await message.channel.send("I can't talk right now please try back later.")
 		logging.error("An error occurred during OpenAI API call: " + str(e))
-		return None
+		raise  # Re-raise the exception to propagate it back to the caller
 
 
-# Handle image generation
 async def handle_image_generation(config, message, bucket, user_message_histories):
     try:
         if bucket.consume(1):
             logging.info(f"Enough bucket tokens exist, running image generation for message: {message.content}")
             bot_name = config["Name"]
             prompt, upscale = parse_prompt(message.content, bot_name)
-            
+
             # Log the parsed prompt
             logging.info("Parsed prompt in handle_image_generation:")
             logging.info(prompt)
-            
-            sd_model_checkpoint, config_model = await check_current_model(config, message)
+
+            # Check and load the current model
+            sd_model_checkpoint = await check_current_model(config,message)
+
+            # Proceed only if the model is successfully loaded
             if sd_model_checkpoint:
-                openai_response = await generate_openai_response(config, message.author.id, user_message_histories, prompt, upscale, bot_name)
+                # Generate response using OpenAI API
+                openai_response = await generate_openai_response(config, message.author.id, user_message_histories, message, prompt, upscale)
+                logging.info(openai_response)
+
+                # Generate image
                 image = await generate_image(config, prompt, upscale)
-                await send_image_response(message, image, openai_response)
+
+                # Send image response
+                await send_image_response(message, image, openai_response, prompt=prompt)
             else:
                 await message.channel.send("Failed to fetch the model. Please try again later.")
                 logging.info("Failed to fetch the model. Skipping image generation.")
@@ -190,51 +199,53 @@ async def handle_image_generation(config, message, bucket, user_message_historie
         logging.error("An error occurred during image generation: " + str(e))
         pass
 
+
+
+
 def parse_prompt(prompt, bot_name):
-    try:
-        upscale = "--upscale" in prompt
-        appearance_info = " ".join([config.get("Appearance", word) for word in ["selfie", "you"] if word in prompt.lower()])
-        
-        # Log the original prompt
-        logging.info("Original Prompt:")
-        logging.info(prompt)
-        
-        # Remove bot's name from the prompt
-        prompt = re.sub(r'\b{}\b'.format(re.escape(bot_name)), '', prompt, flags=re.IGNORECASE).strip()
-        
-        # Log the prompt after removing bot's name
-        logging.info("Prompt after removing bot's name:")
-        logging.info(prompt)
-        
-        logging.info("Prompt parsed successfully.")
-        return prompt, upscale
-    except Exception as e:
-        logging.error("An error occurred during prompt parsing: " + str(e))
-        return "", False
+	try:
+		# Log the original prompt
+		logging.info("Original Prompt:")
+		logging.info(prompt)
+		if "--upscale" in prompt:
+			prompt = prompt.replace("--upscale", "").strip()
+			upscale = True
+		else:
+			upscale = False
+		if "selfie" in prompt or "you" in prompt:
+			prompt = prompt.replace(bot_name, "").strip()
+			logging.info("The prompt contains Selfie so we are appending Appearance to the prompt.")
+			appearance_info = [{'role': 'system', 'content': config.get("Appearance", prompt)}]
+			prompt += " " + json.dumps(appearance_info)  # Append appearance information to the prompt
+		else:
+			# Remove bot's name from the prompt
+			prompt = re.sub(r'\b{}\b'.format(re.escape(bot_name)), '', prompt, flags=re.IGNORECASE).strip()
+			# Log the prompt after removing bot's name
+			logging.info("Prompt after removing bot's name:")
+			logging.info(prompt)
 
+		logging.info("Prompt parsed successfully.")
+		return prompt, upscale
+	except Exception as e:
+		logging.error("An error occurred during prompt parsing: " + str(e))
+		return "", False
 
-
-async def generate_openai_response(config, user_id, user_message_histories, prompt, upscale, bot_name):
-    try:
-        bot_name = config["Name"].lower()
-        # Remove bot's name from the prompt
-        prompt = prompt.replace(bot_name, "").strip()
-        additional_instructions = [{'role': 'system', 'content': config.get("SDOpenAI", "")}]
-        
-        # Log the parsed prompt
-        logging.info("Parsed prompt in generate_openai_response:")
-        logging.info(prompt)
-        
-        # Check if the bot's name is present in the prompt
-        if bot_name.lower() in prompt.lower():
-            raise ValueError("Bot's name detected in the prompt.")
-        response = generate_response(config, user_id, user_message_histories, upscale=upscale, additional_instructions=additional_instructions, prompt=prompt, include_personality=False)
-        logging.info("OpenAI response generated successfully.")
-        return response
-    except Exception as e:
-        logging.error("An error occurred during OpenAI response generation: " + str(e))
-        return None
-
+async def generate_openai_response(config, user_id, user_message_histories, message, prompt, upscale):
+	try:
+		additional_instructions = [{'role': 'system', 'content': config.get("SDOpenAI", "")}]
+		
+		logging.info("Parsed prompt in generate_openai_response:")
+		logging.info(prompt)
+		
+		response = await generate_response(config, user_id, user_message_histories, message, prompt=prompt, include_personality=False, upscale=upscale, additional_instructions=additional_instructions)
+		logging.info("OpenAI response generated successfully.")
+		logging.info(response)
+		return response
+	except Exception as e:
+		logging.error("An error occurred during OpenAI response generation: " + str(e))
+		if message:
+			await message.channel.send("Your image request has been sent without additional processing.")
+		return None
 
 async def generate_image(config, prompt, upscale):
 	try:
@@ -347,7 +358,7 @@ def prepare_json_payload(config, prompt, upscale):
 			"override_settings": {
 				"sd_model_checkpoint": config.get("SDModel")[0],
 				"CLIP_stop_at_last_layers": config.get("SDClipSkip")
-	}
+		}
 		}
 		logging.info("JSON payload prepared successfully.")
 		return json_payload
@@ -377,8 +388,6 @@ def process_response(response):
 		logging.error("An error occurred while processing API response: " + str(e))
 		return None
 
-
-	
 # Check if image is generated
 def image_generated(image):
 	try:
@@ -392,7 +401,7 @@ async def handle_message_processing(config, message, user_message_histories, his
 	try:
 		add_message_to_history('user', message.author.id, message.author.display_name, message.content, user_message_histories, history_file_name)
 		async with message.channel.typing():
-			response = generate_response(config, message.author.id, user_message_histories)
+			response = await generate_response(config, message.author.id, user_message_histories, message, prompt=message.content)
 		
 		# Ensure response is a string
 		if isinstance(response, list):
@@ -426,26 +435,29 @@ def split_into_chunks(response):
 			chunks.append(wrapped_line.strip())
 	return chunks
 
+# Task queue for handling image generation
+async def image_generation_queue(config, message, bucket, user_message_histories):
+	try:
+		await handle_image_generation(config, message, bucket, user_message_histories)
+	except Exception as e:
+		logging.error("An error occurred in image generation queue: " + str(e))
 
-# Configure logging settings
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', encoding='utf-8')
-console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-file_handler = TimedRotatingFileHandler('app.log', when='midnight', interval=1, backupCount=7, encoding='utf-8')
-file_handler.setLevel(logging.INFO)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
-logger = logging.getLogger()
-logger.addHandler(file_handler)
+# Task queue for handling message processing
+async def message_processing_queue(config, message, user_message_histories, history_file_name):
+	try:
+		await handle_message_processing(config, message, user_message_histories, history_file_name)
+	except Exception as e:
+		logging.error("An error occurred in message processing queue: " + str(e))
 
-
-async def run_bot(config):
+# Sharding bot tasks
+async def shard_tasks(config):
 	try:
 		history_file_name = config["Name"] + "_message_histories.json"
 		user_message_histories = load_message_histories(history_file_name)
 		bucket = TokenBucket(capacity=3, refill_rate=0.5)
 		intents = discord.Intents.all()
 		intents.message_content = True
-		bot = discord.Client(intents=intents)
+		bot = discord.AutoShardedClient(intents=intents)
 
 		@bot.event
 		async def on_ready():
@@ -455,47 +467,45 @@ async def run_bot(config):
 		async def on_message(message):
 			try:
 				import re
-				if message.author == bot.user or message.author.id in config["IgnoredUsers"]:
+				if message.author == bot.user:
 					return
+
+				# Check if the message author is ignored or if any ignored words are present in the message
+				ignored_users = config.get("IgnoredUsers", [])
+				ignored_words = config.get("IgnoredWords", [])
+				if message.author.id in ignored_users or any(word.lower() in message.content.lower() for word in ignored_words):
+					logging.info("Ignored word or User Detected, not responding to message.")
+					return
+
 				if message.channel.id in config["AllowedChannels"] or isinstance(message.channel, discord.DMChannel):
-					if config["OnlyWhenCalled"]:
-						if config["Name"].lower() in message.content.lower() or isinstance(message.channel, discord.DMChannel) or bot.user in message.mentions:
-							if not any(word in message.content.lower() for word in config["IgnoredWords"]) and re.search(r"\b(draw|selfie|send)\b", message.content.lower()):
-								await message.channel.send("Hang on while I get that for you...")
-								await handle_image_generation(config, message, bucket, user_message_histories)
-							else:
-								message.content = message.content.replace(config["Name"].lower(), "")
-								await handle_message_processing(config, message, user_message_histories, history_file_name)
-						else:
-							return
+					if config.get("OnlyWhenCalled") and not re.search(r'\b' + re.escape(config["Name"]) + r'\b', message.content, re.IGNORECASE):
+						return
+					logging.info(f"Received message: {message.content}")
+					if "draw" in message.content.lower() or "send" in message.content.lower():
+						await message.channel.send("Hang on while I get that for you...")
+						await image_generation_queue(config, message, bucket, user_message_histories)
 					else:
-						if not any(word in message.content.lower() for word in config["IgnoredWords"]) and re.search(r"\b(draw|selfie|send)\b", message.content.lower()):
-							await message.channel.send("Hang on while I get that for you...")
-							await handle_image_generation(config, message, bucket, user_message_histories)
-						else:
-							if not any(word in message.content.lower() for word in config["IgnoredWords"]):
-								await handle_message_processing(config, message, user_message_histories, history_file_name)
+						await message_processing_queue(config, message, user_message_histories, history_file_name)
 			except Exception as e:
 				logging.error("An error occurred during message handling: " + str(e))
 
 		await bot.start(config["DiscordToken"])
-
-	except KeyboardInterrupt:
-		logging.info("Bot shutting down gracefully due to keyboard interrupt.")
-		await bot.close()
-
 	except Exception as e:
-		logging.error("An error occurred during bot execution: " + str(e))
-
-	finally:
-		logging.info("Closing bot...")
-		await bot.close()
+		logging.error("An error occurred in shard tasks: " + str(e))
 
 
-if __name__ == "__main__":
-	config_path = "Config.json"
-	config = load_config(config_path)
-	if config:
-		asyncio.run(run_bot(config))
-	else:
-		logging.error("Configuration loading failed. Exiting.")
+# Set up logging
+logging.basicConfig(
+	level=logging.INFO,
+	format="%(asctime)s [%(levelname)s] %(message)s",
+	handlers=[
+		TimedRotatingFileHandler("bot.log", when="midnight", backupCount=7),
+		logging.StreamHandler()
+	]
+)
+
+# Load configuration
+config = load_config("config.json")
+
+# Start sharded bot tasks
+asyncio.run(shard_tasks(config))
