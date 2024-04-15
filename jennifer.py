@@ -14,6 +14,9 @@ from PIL import Image
 import re
 import os
 import sys
+import threading
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 # Token Bucket class for rate limiting
 class TokenBucket:
@@ -52,25 +55,24 @@ def add_message_to_history(role, user_id, user_name, message_content, user_messa
 	except Exception as e:
 		logging.error("An error occurred while writing to the JSON file in add_message_to_history: " + str(e))
 
-# Load configuration from file
-import json
-import logging
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 
 # Define a class to handle file system events
 class ConfigFileHandler(FileSystemEventHandler):
-	def __init__(self, config_path, on_change):
-		super().__init__()
-		self.config_path = config_path
-		self.on_change = on_change
+    def __init__(self, config_path, on_change):
+        super().__init__()
+        self.config_path = config_path
+        self.on_change = on_change
 
-	def on_modified(self, event):
-		if event.src_path == self.config_path:
-			logging.info("Config file has been modified. Reloading config...")
-			self.on_change()
+    def on_modified(self, event):
+        if event.src_path == self.config_path:
+            logging.info("Config file has been modified. Reloading config...")
+            self.on_change()
+        else:
+            logging.debug("Detected modification in a file, but it is not the config file.")
 
-# Adjusted load_config function with file monitoring
+
+
+# Adjusted load_config function with threaded file monitoring
 def load_config(config_path):
 	def reload_config():
 		try:
@@ -86,16 +88,37 @@ def load_config(config_path):
 			logging.error("An error occurred while reloading config: " + str(e))
 		return None
 
+	def observe_config_changes():
+		try:
+			observer = Observer()
+			# Construct the config file path dynamically based on the operating system
+			if os.name == 'posix':  # Unix/Linux/MacOS
+				config_file_path = "/app/config/config.json"
+			elif os.name == 'nt':  # Windows
+				config_file_path = os.path.join(os.path.join(os.getcwd(), "config"), "config.json")
+			else:
+				logging.error("Unsupported operating system.")
+				return
+			
+			event_handler = ConfigFileHandler(config_file_path, lambda: setattr(load_config, 'config', reload_config()))
+			observer.schedule(event_handler, path=os.path.dirname(config_file_path), recursive=False)
+			observer.start()
+			logging.info("Observer thread started successfully.")
+			while True:
+				time.sleep(1)  # Add a sleep to keep the thread alive
+		except Exception as e:
+			logging.error("An error occurred while starting the observer thread: " + str(e))
+
+
+
+	# Start file system observer in a separate thread
+	observer_thread = threading.Thread(target=observe_config_changes, daemon=True)
+	observer_thread.start()
+
 	# Initial load of config
 	config = reload_config()
-
-	# Start file system observer
-	observer = Observer()
-	event_handler = ConfigFileHandler(config_path, lambda: setattr(load_config, 'config', reload_config()))
-	observer.schedule(event_handler, path='.', recursive=False)
-	observer.start()
-
 	return config
+
 
 # Load existing message histories from file
 def load_message_histories(history_file_name):
@@ -460,39 +483,39 @@ def image_generated(image):
 		return False
 
 async def send_message_in_thread(thread, content):
-    try:
-        await thread.send(content)
-    except Exception as e:
-        logging.error("An error occurred while sending message in thread: " + str(e))
+	try:
+		await thread.send(content)
+	except Exception as e:
+		logging.error("An error occurred while sending message in thread: " + str(e))
 
 # Function to handle message processing, modified to send responses in the thread
 async def handle_message_processing(config, message, user_message_histories, history_file_name):
-    try:
-        # Add user's message to history
-        add_message_to_history('user', message.author.id, message.author.display_name, message.content, user_message_histories, history_file_name)
-        async with message.channel.typing():
-            # Log the include_personality parameter before calling generate_response
-            logging.info(f"include_personality parameter in handle_message_processing: {True}")
-            # Pass include_personality=True when calling generate_response
-            response = await generate_response(config, message.author.id, user_message_histories, message, include_personality=True)
+	try:
+		# Add user's message to history
+		add_message_to_history('user', message.author.id, message.author.display_name, message.content, user_message_histories, history_file_name)
+		async with message.channel.typing():
+			# Log the include_personality parameter before calling generate_response
+			logging.info(f"include_personality parameter in handle_message_processing: {True}")
+			# Pass include_personality=True when calling generate_response
+			response = await generate_response(config, message.author.id, user_message_histories, message, include_personality=True)
 
-        # Ensure response is a string
-        if isinstance(response, list):
-            response = ' '.join(response)
+		# Ensure response is a string
+		if isinstance(response, list):
+			response = ' '.join(response)
 
-        # Send the response to the user in the thread
-        if response:
-            chunks = split_into_chunks(response)
-            for chunk in chunks:
-                if isinstance(message.channel, nextcord.Thread):
-                    await message.channel.send(chunk)
-                else:
-                    await message.channel.send(chunk)
+		# Send the response to the user in the thread
+		if response:
+			chunks = split_into_chunks(response)
+			for chunk in chunks:
+				if isinstance(message.channel, nextcord.Thread):
+					await message.channel.send(chunk)
+				else:
+					await message.channel.send(chunk)
 
-                # Add a short delay between messages
-                await asyncio.sleep(0.5)  # Adjust delay as needed
-    except Exception as e:
-        logging.error("An error occurred during message processing: " + str(e))
+				# Add a short delay between messages
+				await asyncio.sleep(0.5)  # Adjust delay as needed
+	except Exception as e:
+		logging.error("An error occurred during message processing: " + str(e))
 
 # Function to split the response into chunks respecting sentence boundaries and new lines
 import textwrap
@@ -530,10 +553,17 @@ logging.basicConfig(
 		logging.StreamHandler(sys.stdout)  # Use stdout to avoid encoding issues
 	]
 )
+# Get the current working directory
+cwd = os.getcwd()
 
+# Define the filename
+filename = "config.json"
 
-# Load configuration
-config = load_config("config.json")
+# Construct the full path to the config file
+config_path = os.path.join(cwd, "config", filename)
+
+# Now you can pass config_path to your load_config function
+config = load_config(config_path)
 
 # Define a function to start the sharded bot tasks
 async def start_bot():
