@@ -23,9 +23,9 @@ services:
       options:
         max-file: "3"   # number of files or file count
         max-size: '10m'
-    # Grant access to Nvidia GPU (comment out deploy: and below if not using Nvidia variant)
     volumes:
       - ./config:/app/config  # Mount the ./config directory on the host to /app/config in the container
+    # Grant access to Nvidia GPU (comment out deploy: and below if not using Nvidia variant)
     deploy:
       resources:
         reservations:
