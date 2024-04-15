@@ -39,6 +39,7 @@ def add_message_to_history(role, user_id, user_name, message_content, user_messa
 	try:
 		if user_id not in user_message_histories:
 			user_message_histories[user_id] = []
+		# Add the message to the history
 		user_message_histories[user_id].append({'role': role, 'name': user_name, 'content': message_content})
 		# Fix the calculation of total_character_count to handle NoneType
 		total_character_count = sum(len(entry['content']) for entry in user_message_histories.get(user_id, []) if entry is not None)
@@ -91,51 +92,76 @@ def save_message_histories(history_file_name, user_message_histories):
 	except Exception as e:
 		logging.error("An error occurred while saving message histories in save_message_histories: " + str(e))
 
-# Generate response using OpenAI API
-async def generate_response(config, user_id, user_message_histories, message, additional_instructions=None, prompt=None, include_personality=True, upscale=False):
-	try:
-		client = OpenAI(
-			base_url=config["OpenAPIEndpoint"],
-			api_key=config["OpenAPIKey"]
-		)
+async def generate_response(config, user_id, user_message_histories, message=None, additional_instructions=None, prompt=None, include_personality=True, upscale=False):
+    try:
+        # Initialize OpenAI client with host and API key
+        client = OpenAI(
+            base_url=config["OpenAPIEndpoint"],
+            api_key=config["OpenAPIKey"]
+        )
 
-		if user_id in user_message_histories and user_message_histories[user_id]:
-			recent_message = user_message_histories[user_id][-1]['content']
-		else:
-			recent_message = ""
+        # Determine recent message content
+        recent_message_content = ""
+        if user_id in user_message_histories and user_message_histories[user_id]:
+            recent_message_content = user_message_histories[user_id][-2]['content'] if len(user_message_histories[user_id]) > 1 else ""
+        logging.info(f"Recent message content: {recent_message_content}")
 
-		messages = []
-		if include_personality:
-			messages.append({'role': 'system', 'content': config["Personality"]})
+        # Construct messages
+        messages = []
 
-		if recent_message:
-			messages.append({'role': 'user', 'content': recent_message})
+        # Include personality message
+        if include_personality:
+            personality_command = f"You are {config['Personality']}."
+            messages.append({'role': 'system', 'content': personality_command})
+            logging.info("Included personality message.")
 
-		if additional_instructions:
-			messages.extend(additional_instructions)
+        # Include recent message content if prompt is None
+        if recent_message_content and (message is None or recent_message_content != message.content) and prompt is None:
+            messages.append({'role': 'user', 'content': recent_message_content})
+            logging.info("Included recent user message.")
 
-		if prompt:
-			if isinstance(prompt, str):
-				messages.append({'role': 'system', 'content': prompt})
-			else:
-				logging.warning("Prompt must be provided as a string in generate_response.")
-		else:
-			logging.info("No prompt provided in generate_response.")
+        # Include message content if provided and if prompt is None
+        if message and isinstance(message.content, str) and prompt is None:
+            messages.append({'role': 'user', 'content': message.content})
+            logging.info("Included message content from provided message.")
 
-		response = await asyncio.to_thread(client.chat.completions.create,
-										   messages=messages,
-										   model=config["OpenaiModel"])
+        # Include prompt if provided and not None
+        if isinstance(prompt, str):
+            logging.info("Using provided prompt:")
+            logging.info(prompt)
+            messages.append({'role': 'system', 'content': prompt})
 
-		response_text = response.choices[0].message.content
-		if len(response_text) > 2000:
-			chunks = [response_text[i:i + 2000] for i in range(0, len(response_text), 2000)]
-			return chunks
-		else:
-			return [response_text]
+        # Include additional instructions
+        if additional_instructions:
+            messages.extend(additional_instructions)
+            logging.info("Included additional instructions.")
 
-	except Exception as e:
-		logging.error("An error occurred during OpenAI API call in generate_response: " + str(e))
-		raise  # Re-raise the exception to propagate it back to the caller
+        logging.info(f"Sending data to OpenAI: {messages}")
+
+        # Send request to OpenAI
+        response = client.chat.completions.create(
+            messages=messages,
+            model=config["OpenaiModel"]
+        )
+
+        logging.info("API response received.")
+
+        # Check the length of the response
+        response_text = response.choices[0].message.content
+        if len(response_text) > 2000:
+            # Split the response into chunks of 2000 characters
+            chunks = [response_text[i:i + 2000] for i in range(0, len(response_text), 2000)]
+            return chunks
+        else:
+            return [response_text]
+
+    except Exception as e:
+        if message:
+            await message.channel.send("I can't talk right now please try back later.")
+        logging.error("An error occurred during OpenAI API call: " + str(e))
+        raise  # Re-raise the exception to propagate it back to the caller
+
+
 
 async def handle_image_generation(config, message, bucket, user_message_histories):
 	try:
@@ -177,11 +203,16 @@ def parse_prompt(prompt, bot_name):
         # Log the original prompt
         logging.info("Original Prompt:")
         logging.info(prompt)
-        if "--upscale" in prompt:
-            prompt = prompt.replace("--upscale", "").strip()
-            upscale = True
-        else:
-            upscale = False
+        
+        # Remove "send" and/or "draw" from the prompt
+        prompt = prompt.replace("send", "").replace("draw", "").strip()
+
+        # Check if "--upscale" is present
+        upscale = "--upscale" in prompt
+
+        # Remove "--upscale" from the prompt
+        prompt = prompt.replace("--upscale", "").strip()
+
         if "selfie" in prompt or "you" in prompt:
             prompt = prompt.replace(bot_name, "").strip()
             logging.info("The prompt contains Selfie so we are appending Appearance to the prompt.")
@@ -198,25 +229,28 @@ def parse_prompt(prompt, bot_name):
         return prompt, upscale
     except Exception as e:
         logging.error("An error occurred during prompt parsing: " + str(e))
-        return "", False
-
+        return "", upscale  # Return the upscale value determined earlier
 
 async def generate_openai_response(config, user_id, user_message_histories, message, prompt, upscale):
 	try:
+		
 		additional_instructions = [{'role': 'system', 'content': config.get("SDOpenAI", "")}]
 		
 		logging.info("Parsed prompt in generate_openai_response:")
 		logging.info(prompt)
 		
+		# Generate response using OpenAI API with additional instructions
 		response = await generate_response(config, user_id, user_message_histories, message, prompt=prompt, include_personality=False, upscale=upscale, additional_instructions=additional_instructions)
 		logging.info("OpenAI response generated successfully in generate_openai_response.")
 		logging.info(response)
+		
 		return response
 	except Exception as e:
 		logging.error("An error occurred during OpenAI response generation in generate_openai_response: " + str(e))
 		if message:
 			await message.channel.send("Your image request has been sent without additional processing.")
 		return None
+
 
 async def generate_image(config, prompt, upscale):
 	try:
@@ -276,22 +310,22 @@ async def stable_diffusion_generate_image(config, prompt, upscale):
 		raise  # Re-raise the exception to propagate it back to the caller
 
 async def fetch_options(config):
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = config["SDURL"] + "/sdapi/v1/options"
-            async with session.get(url) as response:
-                response.raise_for_status()
-                options = await response.json()
-                logging.info("Options fetched successfully in fetch_options.")
-                return options
-    except aiohttp.ClientError as e:
-        # Log the error and raise it
-        logging.error(f"HTTP error occurred: {e}, url={url}")
-        raise
-    except Exception as e:
-        # Log the error and raise it
-        logging.error(f"An error occurred while fetching options from the Stable Diffusion API in fetch_options: {e}")
-        raise
+	try:
+		async with aiohttp.ClientSession() as session:
+			url = config["SDURL"] + "/sdapi/v1/options"
+			async with session.get(url) as response:
+				response.raise_for_status()
+				options = await response.json()
+				logging.info("Options fetched successfully in fetch_options.")
+				return options
+	except aiohttp.ClientError as e:
+		# Log the error and raise it
+		logging.error(f"HTTP error occurred: {e}, url={url}")
+		raise
+	except Exception as e:
+		# Log the error and raise it
+		logging.error(f"An error occurred while fetching options from the Stable Diffusion API in fetch_options: {e}")
+		raise
 
 async def check_current_model(config, message):
 	try:
@@ -331,33 +365,33 @@ async def check_current_model(config, message):
 		raise e
 
 def prepare_json_payload(config, prompt, upscale):
-    try:
-        json_payload = {
-            "prompt": config.get("SDPositivePrompt") + (prompt if isinstance(prompt, str) else " ".join(prompt)),
-            "steps": config.get("SDSteps"),
-            "width": config.get("SDWidth"),
-            "height": config.get("SDHeight"),
-            "negative_prompt": config.get("SDNegativePrompt"),
-            "sampler_index": config.get("SDSampler"),
-            "cfg_scale": config.get("SDConfig"),
-            "self_attention": "yes",
-            "enable_hr": upscale,
-            "hr_upscaler": "R-ESRGAN 4x+",
-            "hr_prompt": config.get("SDPositivePrompt") + (prompt if isinstance(prompt, str) else " ".join(prompt)),
-            "hr_negative_prompt": config.get("SDNegativePrompt"),
-            "denoising_strength": 0.5,
-            "override_settings_restore_afterwards": False,
-            "override_settings": {
-                "sd_model_checkpoint": config.get("SDModel")[0],
-                "CLIP_stop_at_last_layers": config.get("SDClipSkip")
-            }
-        }
-        logging.info("JSON payload prepared successfully in prepare_json_payload.")
-        return json_payload
-    except Exception as e:
-        error_message = f"An error occurred while preparing JSON payload: {str(e)}"
-        logging.error(error_message)
-        raise RuntimeError(error_message) from e
+	try:
+		json_payload = {
+			"prompt": config.get("SDPositivePrompt") + (prompt if isinstance(prompt, str) else " ".join(prompt)),
+			"steps": config.get("SDSteps"),
+			"width": config.get("SDWidth"),
+			"height": config.get("SDHeight"),
+			"negative_prompt": config.get("SDNegativePrompt"),
+			"sampler_index": config.get("SDSampler"),
+			"cfg_scale": config.get("SDConfig"),
+			"self_attention": "yes",
+			"enable_hr": upscale,
+			"hr_upscaler": "R-ESRGAN 4x+",
+			"hr_prompt": config.get("SDPositivePrompt") + (prompt if isinstance(prompt, str) else " ".join(prompt)),
+			"hr_negative_prompt": config.get("SDNegativePrompt"),
+			"denoising_strength": 0.5,
+			"override_settings_restore_afterwards": False,
+			"override_settings": {
+				"sd_model_checkpoint": config.get("SDModel")[0],
+				"CLIP_stop_at_last_layers": config.get("SDClipSkip")
+			}
+		}
+		logging.info("JSON payload prepared successfully in prepare_json_payload.")
+		return json_payload
+	except Exception as e:
+		error_message = f"An error occurred while preparing JSON payload: {str(e)}"
+		logging.error(error_message)
+		raise RuntimeError(error_message) from e
 
 async def make_api_call(config, json_payload):
 	try:
@@ -395,15 +429,19 @@ def image_generated(image):
 # Handle message processing
 async def handle_message_processing(config, message, user_message_histories, history_file_name):
 	try:
+		# Add user's message to history
 		add_message_to_history('user', message.author.id, message.author.display_name, message.content, user_message_histories, history_file_name)
 		async with message.channel.typing():
-			response = await generate_response(config, message.author.id, user_message_histories, message, prompt=message.content)
+			# Log the include_personality parameter before calling generate_response
+			logging.info(f"include_personality parameter in handle_message_processing: {True}")
+			# Pass include_personality=True when calling generate_response
+			response = await generate_response(config, message.author.id, user_message_histories, message, include_personality=True)
 		
 		# Ensure response is a string
 		if isinstance(response, list):
 			response = ' '.join(response)
 		
-		# Send the response in chunks respecting word boundaries
+		# Send the response to the user
 		if response:
 			chunks = split_into_chunks(response)
 			for chunk in chunks:
@@ -417,9 +455,8 @@ async def handle_message_processing(config, message, user_message_histories, his
 	except Exception as e:
 		logging.error("An error occurred during message processing: " + str(e))
 
-import textwrap
-
 # Function to split the response into chunks respecting sentence boundaries and new lines
+import textwrap
 def split_into_chunks(response):
 	max_length = 1900
 	chunks = []
