@@ -1,4 +1,4 @@
-import discord
+import nextcord
 from math import log
 from openai import OpenAI
 from collections import deque
@@ -60,42 +60,42 @@ from watchdog.events import FileSystemEventHandler
 
 # Define a class to handle file system events
 class ConfigFileHandler(FileSystemEventHandler):
-    def __init__(self, config_path, on_change):
-        super().__init__()
-        self.config_path = config_path
-        self.on_change = on_change
+	def __init__(self, config_path, on_change):
+		super().__init__()
+		self.config_path = config_path
+		self.on_change = on_change
 
-    def on_modified(self, event):
-        if event.src_path == self.config_path:
-            logging.info("Config file has been modified. Reloading config...")
-            self.on_change()
+	def on_modified(self, event):
+		if event.src_path == self.config_path:
+			logging.info("Config file has been modified. Reloading config...")
+			self.on_change()
 
 # Adjusted load_config function with file monitoring
 def load_config(config_path):
-    def reload_config():
-        try:
-            with open(config_path, "r") as file:
-                config = json.load(file)
-            logging.info(f"Config file successfully reloaded with content: {config}")
-            return config
-        except FileNotFoundError:
-            logging.error("Config file not found. Please check the file path.")
-        except PermissionError:
-            logging.error("Permission denied. Unable to open Config file.")
-        except Exception as e:
-            logging.error("An error occurred while reloading config: " + str(e))
-        return None
+	def reload_config():
+		try:
+			with open(config_path, "r") as file:
+				config = json.load(file)
+			logging.info(f"Config file successfully reloaded with content: {config}")
+			return config
+		except FileNotFoundError:
+			logging.error("Config file not found. Please check the file path.")
+		except PermissionError:
+			logging.error("Permission denied. Unable to open Config file.")
+		except Exception as e:
+			logging.error("An error occurred while reloading config: " + str(e))
+		return None
 
-    # Initial load of config
-    config = reload_config()
+	# Initial load of config
+	config = reload_config()
 
-    # Start file system observer
-    observer = Observer()
-    event_handler = ConfigFileHandler(config_path, lambda: setattr(load_config, 'config', reload_config()))
-    observer.schedule(event_handler, path='.', recursive=False)
-    observer.start()
+	# Start file system observer
+	observer = Observer()
+	event_handler = ConfigFileHandler(config_path, lambda: setattr(load_config, 'config', reload_config()))
+	observer.schedule(event_handler, path='.', recursive=False)
+	observer.start()
 
-    return config
+	return config
 
 # Load existing message histories from file
 def load_message_histories(history_file_name):
@@ -309,17 +309,17 @@ async def send_image_response(message, image, openai_response, prompt=""):
 		image_bytes = io.BytesIO()
 		image.save(image_bytes, format='PNG')
 		image_bytes.seek(0)
-		file = discord.File(image_bytes, filename='output.png')
+		file = nextcord.File(image_bytes, filename='output.png')
 
 		if openai_response:
-			if isinstance(message.channel, discord.DMChannel):
+			if isinstance(message.channel, nextcord.DMChannel):
 				await message.author.send(file=file)
 				await message.author.send(openai_response[0])
 			else:
 				await message.channel.send(file=file)
 				await message.channel.send(openai_response[0])
 		else:
-			if isinstance(message.channel, discord.DMChannel):
+			if isinstance(message.channel, nextcord.DMChannel):
 				await message.author.send(file=file)
 			else:
 				await message.channel.send(file=file)
@@ -373,7 +373,7 @@ async def check_current_model(config, message):
 				logging.warning("Loaded model does not match configured model in check_current_model.")
 				if message:
 					logging.info("Sending message to notify about model mismatch in check_current_model...")
-					if isinstance(message.channel, discord.DMChannel):
+					if isinstance(message.channel, nextcord.DMChannel):
 						await message.author.send("Please wait, switching models...")
 					else:
 						await message.channel.send("It may take me a bit of time to draw that picture. Please be patient")
@@ -459,34 +459,40 @@ def image_generated(image):
 		logging.error("An error occurred during image generation in image_generated: " + str(e))
 		return False
 
-# Handle message processing
+async def send_message_in_thread(thread, content):
+    try:
+        await thread.send(content)
+    except Exception as e:
+        logging.error("An error occurred while sending message in thread: " + str(e))
+
+# Function to handle message processing, modified to send responses in the thread
 async def handle_message_processing(config, message, user_message_histories, history_file_name):
-	try:
-		# Add user's message to history
-		add_message_to_history('user', message.author.id, message.author.display_name, message.content, user_message_histories, history_file_name)
-		async with message.channel.typing():
-			# Log the include_personality parameter before calling generate_response
-			logging.info(f"include_personality parameter in handle_message_processing: {True}")
-			# Pass include_personality=True when calling generate_response
-			response = await generate_response(config, message.author.id, user_message_histories, message, include_personality=True)
-		
-		# Ensure response is a string
-		if isinstance(response, list):
-			response = ' '.join(response)
-		
-		# Send the response to the user
-		if response:
-			chunks = split_into_chunks(response)
-			for chunk in chunks:
-				if isinstance(message.channel, discord.DMChannel):
-					await message.author.send(chunk)
-				else:
-					await message.channel.send(chunk)
-				
-				# Add a 100ms delay
-				await asyncio.sleep(0.05)
-	except Exception as e:
-		logging.error("An error occurred during message processing: " + str(e))
+    try:
+        # Add user's message to history
+        add_message_to_history('user', message.author.id, message.author.display_name, message.content, user_message_histories, history_file_name)
+        async with message.channel.typing():
+            # Log the include_personality parameter before calling generate_response
+            logging.info(f"include_personality parameter in handle_message_processing: {True}")
+            # Pass include_personality=True when calling generate_response
+            response = await generate_response(config, message.author.id, user_message_histories, message, include_personality=True)
+
+        # Ensure response is a string
+        if isinstance(response, list):
+            response = ' '.join(response)
+
+        # Send the response to the user in the thread
+        if response:
+            chunks = split_into_chunks(response)
+            for chunk in chunks:
+                if isinstance(message.channel, nextcord.Thread):
+                    await message.channel.send(chunk)
+                else:
+                    await message.channel.send(chunk)
+
+                # Add a short delay between messages
+                await asyncio.sleep(0.5)  # Adjust delay as needed
+    except Exception as e:
+        logging.error("An error occurred during message processing: " + str(e))
 
 # Function to split the response into chunks respecting sentence boundaries and new lines
 import textwrap
@@ -535,9 +541,9 @@ async def start_bot():
 		history_file_name = config["Name"] + "_message_histories.json"
 		user_message_histories = load_message_histories(history_file_name)
 		bucket = TokenBucket(capacity=3, refill_rate=0.5)
-		intents = discord.Intents.all()
+		intents = nextcord.Intents.all()
 		intents.message_content = True
-		bot = discord.AutoShardedClient(intents=intents)
+		bot = nextcord.AutoShardedClient(intents=intents)
 
 		@bot.event
 		async def on_ready():
@@ -546,8 +552,12 @@ async def start_bot():
 		@bot.event
 		async def on_message(message):
 			try:
-				import re
 				if message.author == bot.user:
+					return
+
+				# Check if the message starts with '!'
+				if message.content.startswith('!'):
+					logging.info("Message starts with '!'. Ignoring message.")
 					return
 
 				# Check if the message author is ignored or if any ignored words are present in the message
@@ -557,19 +567,25 @@ async def start_bot():
 					logging.info("Message from an ignored user or contains ignored words. Ignoring message.")
 					return
 
-				if message.channel.id in config["AllowedChannels"] or isinstance(message.channel, discord.DMChannel):
-					if config.get("OnlyWhenCalled") and not re.search(r'\b' + re.escape(config["Name"]) + r'\b', message.content, re.IGNORECASE):
-						logging.info("Message does not contain bot name. Ignoring message.")
-						return
-					logging.info(f"Received message: {message.content}")
-					if "draw" in message.content.lower() or "send" in message.content.lower():
+				# Determine if the message is in a thread or not
+				in_thread = isinstance(message.channel, nextcord.Thread)
+
+				# Check if the message is in an allowed channel or a DM, and process accordingly
+				# if message.channel.id in config["AllowedChannels"] or isinstance(message.channel, nextcord.DMChannel):
+				# 	if config.get("OnlyWhenCalled") and not re.search(r'\b' + re.escape(config["Name"]) + r'\b', message.content, re.IGNORECASE):
+				# 		logging.info("Message does not contain bot name. Ignoring message.")
+				# 		return
+				logging.info(f"Received message: {message.content}")
+				if "draw" in message.content.lower() or "send" in message.content.lower():
+					if in_thread:
 						await message.channel.send("Hang on while I get that for you...")
-						await image_generation_queue(config, message, bucket, user_message_histories)
 					else:
-						await message_processing_queue(config, message, user_message_histories, history_file_name)
+						await message.channel.send("Hang on while I get that for you...")
+					await image_generation_queue(config, message, bucket, user_message_histories)
+				else:
+					await message_processing_queue(config, message, user_message_histories, history_file_name)
 			except Exception as e:
 				logging.error("An error occurred during message handling: " + str(e))
-
 
 		await bot.start(config["DiscordToken"])
 	except Exception as e:
