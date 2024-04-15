@@ -15,7 +15,7 @@ import re
 import os
 import sys
 import threading
-from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
 
 # Token Bucket class for rate limiting
@@ -90,10 +90,11 @@ def load_config(config_path):
 
 	def observe_config_changes():
 		try:
-			observer = Observer()
+			observer = PollingObserver()
 			# Construct the config file path dynamically based on the operating system
 			if os.name == 'posix':  # Unix/Linux/MacOS
 				config_file_path = "/app/config/config.json"
+				observed_dir = "/app/config"
 			elif os.name == 'nt':  # Windows
 				config_file_path = os.path.join(os.path.join(os.getcwd(), "config"), "config.json")
 			else:
