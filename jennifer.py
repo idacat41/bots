@@ -53,19 +53,49 @@ def add_message_to_history(role, user_id, user_name, message_content, user_messa
 		logging.error("An error occurred while writing to the JSON file in add_message_to_history: " + str(e))
 
 # Load configuration from file
+import json
+import logging
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+# Define a class to handle file system events
+class ConfigFileHandler(FileSystemEventHandler):
+    def __init__(self, config_path, on_change):
+        super().__init__()
+        self.config_path = config_path
+        self.on_change = on_change
+
+    def on_modified(self, event):
+        if event.src_path == self.config_path:
+            logging.info("Config file has been modified. Reloading config...")
+            self.on_change()
+
+# Adjusted load_config function with file monitoring
 def load_config(config_path):
-	try:
-		with open(config_path, "r") as file:
-			config = json.load(file)
-		logging.info(f"Config file successfully opened with content in load_config: {config}")
-		return config
-	except FileNotFoundError:
-		logging.error("Config file not found in load_config. Please check the file path.")
-	except PermissionError:
-		logging.error("Permission denied in load_config. Unable to open Config file.")
-	except Exception as e:
-		logging.error("An error occurred while loading config in load_config: " + str(e))
-	return None
+    def reload_config():
+        try:
+            with open(config_path, "r") as file:
+                config = json.load(file)
+            logging.info(f"Config file successfully reloaded with content: {config}")
+            return config
+        except FileNotFoundError:
+            logging.error("Config file not found. Please check the file path.")
+        except PermissionError:
+            logging.error("Permission denied. Unable to open Config file.")
+        except Exception as e:
+            logging.error("An error occurred while reloading config: " + str(e))
+        return None
+
+    # Initial load of config
+    config = reload_config()
+
+    # Start file system observer
+    observer = Observer()
+    event_handler = ConfigFileHandler(config_path, lambda: setattr(load_config, 'config', reload_config()))
+    observer.schedule(event_handler, path='.', recursive=False)
+    observer.start()
+
+    return config
 
 # Load existing message histories from file
 def load_message_histories(history_file_name):
@@ -93,73 +123,73 @@ def save_message_histories(history_file_name, user_message_histories):
 		logging.error("An error occurred while saving message histories in save_message_histories: " + str(e))
 
 async def generate_response(config, user_id, user_message_histories, message=None, additional_instructions=None, prompt=None, include_personality=True, upscale=False):
-    try:
-        # Initialize OpenAI client with host and API key
-        client = OpenAI(
-            base_url=config["OpenAPIEndpoint"],
-            api_key=config["OpenAPIKey"]
-        )
+	try:
+		# Initialize OpenAI client with host and API key
+		client = OpenAI(
+			base_url=config["OpenAPIEndpoint"],
+			api_key=config["OpenAPIKey"]
+		)
 
-        # Determine recent message content
-        recent_message_content = ""
-        if user_id in user_message_histories and user_message_histories[user_id]:
-            recent_message_content = user_message_histories[user_id][-2]['content'] if len(user_message_histories[user_id]) > 1 else ""
-        logging.info(f"Recent message content: {recent_message_content}")
+		# Determine recent message content
+		recent_message_content = ""
+		if user_id in user_message_histories and user_message_histories[user_id]:
+			recent_message_content = user_message_histories[user_id][-2]['content'] if len(user_message_histories[user_id]) > 1 else ""
+		logging.info(f"Recent message content: {recent_message_content}")
 
-        # Construct messages
-        messages = []
+		# Construct messages
+		messages = []
 
-        # Include personality message
-        if include_personality:
-            personality_command = f"You are {config['Personality']}."
-            messages.append({'role': 'system', 'content': personality_command})
-            logging.info("Included personality message.")
+		# Include additional instructions
+		if additional_instructions:
+			messages.extend(additional_instructions)
+			logging.info("Included additional instructions.")
 
-        # Include recent message content if prompt is None
-        if recent_message_content and (message is None or recent_message_content != message.content) and prompt is None:
-            messages.append({'role': 'user', 'content': recent_message_content})
-            logging.info("Included recent user message.")
+		# Include personality message
+		if include_personality:
+			personality_command = f"You are {config['Personality']}."
+			messages.append({'role': 'system', 'content': personality_command})
+			logging.info("Included personality message.")
 
-        # Include message content if provided and if prompt is None
-        if message and isinstance(message.content, str) and prompt is None:
-            messages.append({'role': 'user', 'content': message.content})
-            logging.info("Included message content from provided message.")
+		# Include recent message content if prompt is None
+		if recent_message_content and (message is None or recent_message_content != message.content) and prompt is None:
+			messages.append({'role': 'user', 'content': recent_message_content})
+			logging.info("Included recent user message.")
 
-        # Include prompt if provided and not None
-        if isinstance(prompt, str):
-            logging.info("Using provided prompt:")
-            logging.info(prompt)
-            messages.append({'role': 'system', 'content': prompt})
+		# Include message content if provided and if prompt is None
+		if message and isinstance(message.content, str) and prompt is None:
+			messages.append({'role': 'user', 'content': message.content})
+			logging.info("Included message content from provided message.")
 
-        # Include additional instructions
-        if additional_instructions:
-            messages.extend(additional_instructions)
-            logging.info("Included additional instructions.")
+		# Include prompt if provided and not None
+		if isinstance(prompt, str):
+			logging.info("Using provided prompt:")
+			logging.info(prompt)
+			messages.append({'role': 'system', 'content': prompt})
 
-        logging.info(f"Sending data to OpenAI: {messages}")
+		logging.info(f"Sending data to OpenAI: {messages}")
 
-        # Send request to OpenAI
-        response = client.chat.completions.create(
-            messages=messages,
-            model=config["OpenaiModel"]
-        )
+		# Send request to OpenAI
+		response = client.chat.completions.create(
+			messages=messages,
+			model=config["OpenaiModel"]
+		)
 
-        logging.info("API response received.")
+		logging.info("API response received.")
 
-        # Check the length of the response
-        response_text = response.choices[0].message.content
-        if len(response_text) > 2000:
-            # Split the response into chunks of 2000 characters
-            chunks = [response_text[i:i + 2000] for i in range(0, len(response_text), 2000)]
-            return chunks
-        else:
-            return [response_text]
+		# Check the length of the response
+		response_text = response.choices[0].message.content
+		if len(response_text) > 2000:
+			# Split the response into chunks of 2000 characters
+			chunks = [response_text[i:i + 2000] for i in range(0, len(response_text), 2000)]
+			return chunks
+		else:
+			return [response_text]
 
-    except Exception as e:
-        if message:
-            await message.channel.send("I can't talk right now please try back later.")
-        logging.error("An error occurred during OpenAI API call: " + str(e))
-        raise  # Re-raise the exception to propagate it back to the caller
+	except Exception as e:
+		if message:
+			await message.channel.send("I can't talk right now please try back later.")
+		logging.error("An error occurred during OpenAI API call: " + str(e))
+		raise  # Re-raise the exception to propagate it back to the caller
 
 
 
@@ -168,7 +198,7 @@ async def handle_image_generation(config, message, bucket, user_message_historie
 		if bucket.consume(1):
 			logging.info(f"Enough bucket tokens exist, running image generation for message: {message.content}")
 			bot_name = config["Name"]
-			prompt, upscale = parse_prompt(message.content, bot_name)
+			prompt, upscale, additional_instructions = parse_prompt(message.content, bot_name, config)
 
 			# Log the parsed prompt
 			logging.info("Parsed prompt in handle_image_generation:")
@@ -180,7 +210,7 @@ async def handle_image_generation(config, message, bucket, user_message_historie
 			# Proceed only if the model is successfully loaded
 			if sd_model_checkpoint:
 				# Generate response using OpenAI API
-				openai_response = await generate_openai_response(config, message.author.id, user_message_histories, message, prompt, upscale)
+				openai_response = await generate_openai_response(config, message.author.id, user_message_histories, message, prompt, upscale, additional_instructions)
 				logging.info(openai_response)
 
 				# Generate image
@@ -198,46 +228,49 @@ async def handle_image_generation(config, message, bucket, user_message_historie
 		logging.error("An error occurred during image generation: " + str(e))
 		pass
 
-def parse_prompt(prompt, bot_name):
-    try:
-        # Log the original prompt
-        logging.info("Original Prompt:")
-        logging.info(prompt)
-        
-        # Remove "send" and/or "draw" from the prompt
-        prompt = prompt.replace("send", "").replace("draw", "").strip()
-
-        # Check if "--upscale" is present
-        upscale = "--upscale" in prompt
-
-        # Remove "--upscale" from the prompt
-        prompt = prompt.replace("--upscale", "").strip()
-
-        if "selfie" in prompt or "you" in prompt:
-            prompt = prompt.replace(bot_name, "").strip()
-            logging.info("The prompt contains Selfie so we are appending Appearance to the prompt.")
-            appearance_info = [{'role': 'system', 'content': config.get("Appearance", prompt)}]
-            prompt += " " + json.dumps(appearance_info)  # Append appearance information to the prompt
-        else:
-            # Remove bot's name from the prompt
-            prompt = re.sub(r'\b{}\b'.format(re.escape(bot_name)), '', prompt, flags=re.IGNORECASE).strip()
-            # Log the prompt after removing bot's name
-            logging.info("Prompt after removing bot's name:")
-            logging.info(prompt)
-
-        logging.info("Prompt parsed successfully.")
-        return prompt, upscale
-    except Exception as e:
-        logging.error("An error occurred during prompt parsing: " + str(e))
-        return "", upscale  # Return the upscale value determined earlier
-
-async def generate_openai_response(config, user_id, user_message_histories, message, prompt, upscale):
+def parse_prompt(prompt, bot_name, config):
 	try:
-		
-		additional_instructions = [{'role': 'system', 'content': config.get("SDOpenAI", "")}]
-		
-		logging.info("Parsed prompt in generate_openai_response:")
+		# Log the original prompt
+		logging.info("Original Prompt:")
 		logging.info(prompt)
+		
+		# Remove "send" and/or "draw" from the prompt
+		prompt = prompt.replace("send", "").replace("draw", "").strip()
+
+		# Check if "--upscale" is present
+		upscale = "--upscale" in prompt
+
+		# Remove "--upscale" from the prompt
+		prompt = prompt.replace("--upscale", "").strip()
+
+		additional_instructions = [{'role': 'system', 'content': config.get("SDOpenAI", "")}]
+		appearance_info = []
+
+		if "selfie" in prompt or "you" in prompt:
+			prompt = prompt.replace(bot_name, "").strip()
+			logging.info("The prompt contains Selfie so we are appending Appearance to the prompt.")
+			appearance_info = [{'role': 'system', 'content': config.get("Appearance", prompt)}]
+
+		else:
+			# Remove bot's name from the prompt
+			prompt = re.sub(r'\b{}\b'.format(re.escape(bot_name)), '', prompt, flags=re.IGNORECASE).strip()
+			# Log the prompt after removing bot's name
+			logging.info("Prompt after removing bot's name:")
+			logging.info(prompt)
+
+		logging.info("Prompt parsed successfully.")
+		
+		# Construct prompt with additional_instructions, appearance_info, and prompt
+		prompt = json.dumps(additional_instructions + appearance_info) + " " + prompt
+		
+		return prompt, upscale, additional_instructions
+	except Exception as e:
+		logging.error("An error occurred during prompt parsing: " + str(e))
+		return "", upscale, []  # Return an empty list for additional_instructions
+
+
+async def generate_openai_response(config, user_id, user_message_histories, message, prompt, upscale, additional_instructions):
+	try:
 		
 		# Generate response using OpenAI API with additional instructions
 		response = await generate_response(config, user_id, user_message_histories, message, prompt=prompt, include_personality=False, upscale=upscale, additional_instructions=additional_instructions)
