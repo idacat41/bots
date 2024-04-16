@@ -78,7 +78,7 @@ def load_config(config_path):
 		try:
 			with open(config_path, "r") as file:
 				config = json.load(file)
-			logging.info(f"Config file successfully reloaded with content: {config}")
+			# logging.info(f"Config file successfully reloaded with content: {config}")
 			return config
 		except FileNotFoundError:
 			logging.error("Config file not found. Please check the file path.")
@@ -574,6 +574,7 @@ async def start_bot():
 		bucket = TokenBucket(capacity=3, refill_rate=0.5)
 		intents = nextcord.Intents.all()
 		intents.message_content = True
+		intents.guild_messages= True
 		bot = nextcord.AutoShardedClient(intents=intents)
 
 		@bot.event
@@ -598,20 +599,17 @@ async def start_bot():
 					logging.info("Message from an ignored user or contains ignored words. Ignoring message.")
 					return
 
-				# Determine if the message is in a thread or not
-				in_thread = isinstance(message.channel, nextcord.Thread)
+				# Check if the message is in an allowed channel
+				if not isinstance(message.channel, (nextcord.Thread, nextcord.DMChannel)):
+					if message.channel.id not in config["AllowedChannels"]:
+						logging.info("Message not in an allowed channel. Ignoring message.")
+						return
 
-				# Check if the message is in an allowed channel or a DM, and process accordingly
-				# if message.channel.id in config["AllowedChannels"] or isinstance(message.channel, nextcord.DMChannel):
-				# 	if config.get("OnlyWhenCalled") and not re.search(r'\b' + re.escape(config["Name"]) + r'\b', message.content, re.IGNORECASE):
-				# 		logging.info("Message does not contain bot name. Ignoring message.")
-				# 		return
 				logging.info(f"Received message: {message.content}")
+
+				# Process messages without further checks
 				if "draw" in message.content.lower() or "send" in message.content.lower():
-					if in_thread:
-						await message.channel.send("Hang on while I get that for you...")
-					else:
-						await message.channel.send("Hang on while I get that for you...")
+					await message.channel.send("Hang on while I get that for you...")
 					await image_generation_queue(config, message, bucket, user_message_histories)
 				else:
 					await message_processing_queue(config, message, user_message_histories, history_file_name)
