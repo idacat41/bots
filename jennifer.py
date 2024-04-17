@@ -51,58 +51,54 @@ def add_message_to_history(role, user_id, user_name, message_content, user_messa
 			total_character_count -= len(oldest_entry['content'])
 		with open(history_file_name, 'w') as file:
 			json.dump(user_message_histories, file)
-		logging.info("Message added to history and saved to file successfully.")
+		logging.debug("Message added to history and saved to file successfully.")
 	except Exception as e:
 		logging.error("An error occurred while writing to the JSON file in add_message_to_history: " + str(e))
 
 
 # Define a class to handle file system events
 class ConfigFileHandler(FileSystemEventHandler):
-    def __init__(self, config_path, on_change):
-        super().__init__()
-        self.config_path = config_path
-        self.on_change = on_change
+	def __init__(self, config_path, on_change):
+		super().__init__()
+		self.config_path = config_path
+		self.on_change = on_change
 
-    def on_modified(self, event):
-        if event.src_path == self.config_path:
-            logging.info("Config file has been modified. Reloading config...")
-            self.on_change()
-        else:
-            logging.debug("Detected modification in a file, but it is not the config file.")
+	def on_modified(self, event):
+		if event.src_path == self.config_path:
+			logging.info("Config file has been modified. Reloading config...")
+			self.on_change()
+		else:
+			logging.debug("Detected modification in a file, but it is not the config file.")
 
+
+# Define a function to reload the config
+def reload_config():
+	global config
+	config = load_config(config_path)
+
+# Update the load_config function to not call the reload_config function
+def load_config(config_path):
+	try:
+		with open(config_path, "r") as file:
+			config = json.load(file)
+			# logging.debug(f"Config file successfully loaded with content: {config}")
+		return config
+	except FileNotFoundError:
+		logging.error("Config file not found. Please check the file path.")
+	except PermissionError:
+		logging.error("Permission denied. Unable to open Config file.")
+	except Exception as e:
+		logging.error("An error occurred while loading config: " + str(e))
+	return None
 
 
 # Adjusted load_config function with threaded file monitoring
-def load_config(config_path):
-	def reload_config():
-		try:
-			with open(config_path, "r") as file:
-				config = json.load(file)
-			# logging.info(f"Config file successfully reloaded with content: {config}")
-			return config
-		except FileNotFoundError:
-			logging.error("Config file not found. Please check the file path.")
-		except PermissionError:
-			logging.error("Permission denied. Unable to open Config file.")
-		except Exception as e:
-			logging.error("An error occurred while reloading config: " + str(e))
-		return None
-
+def load_config_with_observer(config_path):
 	def observe_config_changes():
 		try:
 			observer = PollingObserver()
-			# Construct the config file path dynamically based on the operating system
-			if os.name == 'posix':  # Unix/Linux/MacOS
-				config_file_path = "/app/config/config.json"
-				observed_dir = "/app/config"
-			elif os.name == 'nt':  # Windows
-				config_file_path = os.path.join(os.path.join(os.getcwd(), "config"), "config.json")
-			else:
-				logging.error("Unsupported operating system.")
-				return
-			
-			event_handler = ConfigFileHandler(config_file_path, lambda: setattr(load_config, 'config', reload_config()))
-			observer.schedule(event_handler, path=os.path.dirname(config_file_path), recursive=False)
+			event_handler = ConfigFileHandler(config_path, reload_config)
+			observer.schedule(event_handler, path=os.path.dirname(config_path), recursive=False)
 			observer.start()
 			logging.info("Observer thread started successfully.")
 			while True:
@@ -110,14 +106,12 @@ def load_config(config_path):
 		except Exception as e:
 			logging.error("An error occurred while starting the observer thread: " + str(e))
 
-
-
 	# Start file system observer in a separate thread
 	observer_thread = threading.Thread(target=observe_config_changes, daemon=True)
 	observer_thread.start()
 
 	# Initial load of config
-	config = reload_config()
+	config = load_config(config_path)
 	return config
 
 
@@ -142,7 +136,7 @@ def save_message_histories(history_file_name, user_message_histories):
 	try:
 		with open(history_file_name, 'w') as file:
 			json.dump(user_message_histories, file)
-		logging.info("Message histories saved to file successfully in save_message_histories.")
+		logging.debug("Message histories saved to file successfully in save_message_histories.")
 	except Exception as e:
 		logging.error("An error occurred while saving message histories in save_message_histories: " + str(e))
 
@@ -158,7 +152,7 @@ async def generate_response(config, user_id, user_message_histories, message=Non
 		recent_message_content = ""
 		if user_id in user_message_histories and user_message_histories[user_id]:
 			recent_message_content = user_message_histories[user_id][-2]['content'] if len(user_message_histories[user_id]) > 1 else ""
-		logging.info(f"Recent message content: {recent_message_content}")
+		logging.debug(f"Recent message content: {recent_message_content}")
 
 		# Construct messages
 		messages = []
@@ -187,10 +181,10 @@ async def generate_response(config, user_id, user_message_histories, message=Non
 		# Include prompt if provided and not None
 		if isinstance(prompt, str):
 			logging.info("Using provided prompt:")
-			logging.info(prompt)
+			logging.debug(prompt)
 			messages.append({'role': 'system', 'content': prompt})
 
-		logging.info(f"Sending data to OpenAI: {messages}")
+		logging.debug(f"Sending data to OpenAI: {messages}")
 
 		# Send request to OpenAI
 		response = client.chat.completions.create(
@@ -226,7 +220,7 @@ async def handle_image_generation(config, message, bucket, user_message_historie
 
 			# Log the parsed prompt
 			logging.info("Parsed prompt in handle_image_generation:")
-			logging.info(prompt)
+			logging.debug(prompt)
 
 			# Check and load the current model
 			sd_model_checkpoint = await check_current_model(config,message)
@@ -235,7 +229,7 @@ async def handle_image_generation(config, message, bucket, user_message_historie
 			if sd_model_checkpoint:
 				# Generate response using OpenAI API
 				openai_response = await generate_openai_response(config, message.author.id, user_message_histories, message, prompt, upscale, additional_instructions)
-				logging.info(openai_response)
+				logging.debug(openai_response)
 
 				# Generate image
 				image = await generate_image(config, prompt, upscale)
@@ -244,7 +238,7 @@ async def handle_image_generation(config, message, bucket, user_message_historie
 				await send_image_response(message, image, openai_response, prompt=prompt)
 			else:
 				await message.channel.send("Failed to fetch the model. Please try again later.")
-				logging.info("Failed to fetch the model. Skipping image generation.")
+				logging.error("Failed to fetch the model. Skipping image generation.")
 		else:
 			await message.channel.send("I'm busy sketching for you. Please wait until I finish this one before asking for another.")
 			logging.info("Image drawing throttled. Skipping draw request")
@@ -255,8 +249,8 @@ async def handle_image_generation(config, message, bucket, user_message_historie
 def parse_prompt(prompt, bot_name, config):
 	try:
 		# Log the original prompt
-		logging.info("Original Prompt:")
-		logging.info(prompt)
+		logging.debug("Original Prompt:")
+		logging.debug(prompt)
 		
 		# Remove "send" and/or "draw" from the prompt
 		prompt = prompt.replace("send", "").replace("draw", "").strip()
@@ -267,7 +261,17 @@ def parse_prompt(prompt, bot_name, config):
 		# Remove "--upscale" from the prompt
 		prompt = prompt.replace("--upscale", "").strip()
 
-		additional_instructions = [{'role': 'system', 'content': config.get("SDOpenAI", "")}]
+		additional_instructions = [
+			{
+				'role': 'system',
+				'content': {
+					'SDOpenAI': config.get("SDOpenAI", ""),
+					'steps': config.get("steps", {}),
+					'additional_steps': config.get("additional_steps", {})
+				}
+			}
+		]
+
 		appearance_info = []
 
 		if "selfie" in prompt or "you" in prompt:
@@ -279,8 +283,8 @@ def parse_prompt(prompt, bot_name, config):
 			# Remove bot's name from the prompt
 			prompt = re.sub(r'\b{}\b'.format(re.escape(bot_name)), '', prompt, flags=re.IGNORECASE).strip()
 			# Log the prompt after removing bot's name
-			logging.info("Prompt after removing bot's name:")
-			logging.info(prompt)
+			logging.debug("Prompt after removing bot's name:")
+			logging.debug(prompt)
 
 		logging.info("Prompt parsed successfully.")
 		
@@ -299,7 +303,7 @@ async def generate_openai_response(config, user_id, user_message_histories, mess
 		# Generate response using OpenAI API with additional instructions
 		response = await generate_response(config, user_id, user_message_histories, message, prompt=prompt, include_personality=False, upscale=upscale, additional_instructions=additional_instructions)
 		logging.info("OpenAI response generated successfully in generate_openai_response.")
-		logging.info(response)
+		logging.debug(response)
 		
 		return response
 	except Exception as e:
@@ -325,7 +329,7 @@ async def send_image_response(message, image, openai_response, prompt=""):
 	try:
 		if openai_response:
 			prompt += " " + " ".join(openai_response)
-			logging.info("OpenAi Prompt in send_image_response: %s", prompt)
+			logging.debug("OpenAi Prompt in send_image_response: %s", prompt)
 
 		if image is None:
 			raise ValueError("Image object is NoneType in send_image_response.")
@@ -356,6 +360,7 @@ async def send_image_response(message, image, openai_response, prompt=""):
 async def stable_diffusion_generate_image(config, prompt, upscale):
 	try:
 		json_payload = prepare_json_payload(config, prompt, upscale)
+		logging.debug(json.dumps(json_payload))
 		if json_payload:
 			response = await make_api_call(config, json_payload)
 			if response:
@@ -387,16 +392,16 @@ async def fetch_options(config):
 async def check_current_model(config, message):
 	try:
 		options = await fetch_options(config)
-		# logging.info("Received options from the API in check_current_model: %s", options)
+		# logging.debug("Received options from the API in check_current_model: %s", options)
 
 		# Check if the 'sd_model_checkpoint' key exists in the options
 		if 'sd_model_checkpoint' in options:
 			sd_model_checkpoint = options['sd_model_checkpoint']
-			configured_model_checkpoint = config["SDModel"][0]
+			configured_model_checkpoint = config["SDModel"]
 			if sd_model_checkpoint != configured_model_checkpoint:
 				logging.warning("Loaded model does not match configured model in check_current_model.")
 				if message:
-					logging.info("Sending message to notify about model mismatch in check_current_model...")
+					logging.warning("Sending message to notify about model mismatch in check_current_model...")
 					if isinstance(message.channel, nextcord.DMChannel):
 						await message.author.send("Please wait, switching models...")
 					else:
@@ -469,7 +474,7 @@ def process_response(response):
 	try:
 		image_data = base64.b64decode(response['images'][0])
 		image = Image.open(io.BytesIO(image_data))
-		logging.info("Image generated successfully in process_response.")
+		logging.debug("Image generated successfully in process_response.")
 		return image
 	except Exception as e:
 		logging.error("An error occurred while processing API response in process_response: " + str(e))
@@ -496,7 +501,7 @@ async def handle_message_processing(config, message, user_message_histories, his
 		add_message_to_history('user', message.author.id, message.author.display_name, message.content, user_message_histories, history_file_name)
 		async with message.channel.typing():
 			# Log the include_personality parameter before calling generate_response
-			logging.info(f"include_personality parameter in handle_message_processing: {True}")
+			logging.debug(f"include_personality parameter in handle_message_processing: {True}")
 			# Pass include_personality=True when calling generate_response
 			response = await generate_response(config, message.author.id, user_message_histories, message, include_personality=True)
 
@@ -545,15 +550,18 @@ async def message_processing_queue(config, message, user_message_histories, hist
 	except Exception as e:
 		logging.error("An error occurred in message processing queue: " + str(e))
 
-# Set up logging
-logging.basicConfig(
-	level=logging.INFO,
-	format="%(asctime)s [%(levelname)s] %(message)s",
-	handlers=[
-		TimedRotatingFileHandler("app.log", when="midnight", backupCount=7, encoding='utf-8'),  # Ensure log file encoding is UTF-8
-		logging.StreamHandler(sys.stdout)  # Use stdout to avoid encoding issues
-	]
-)
+def log_setup(config):
+	# Assuming "LogLevel" is a key in the config dictionary
+	log_level = config.get("LogLevel", "INFO")  # Default to INFO if LogLevel is not present
+	logging.basicConfig(
+		level=log_level,
+		format="%(asctime)s [%(levelname)s] %(message)s",
+		handlers=[
+			TimedRotatingFileHandler("app.log", when="midnight", backupCount=7, encoding='utf-8'),
+			logging.StreamHandler(sys.stdout)
+		]
+	)
+
 # Get the current working directory
 cwd = os.getcwd()
 
@@ -569,6 +577,7 @@ config = load_config(config_path)
 # Define a function to start the sharded bot tasks
 async def start_bot():
 	try:
+		log_setup(config)
 		history_file_name = config["Name"] + "_message_histories.json"
 		user_message_histories = load_message_histories(history_file_name)
 		bucket = TokenBucket(capacity=3, refill_rate=0.5)
@@ -584,19 +593,13 @@ async def start_bot():
 		@bot.event
 		async def on_message(message):
 			try:
+				reload_config()
 				if message.author == bot.user:
 					return
 
 				# Check if the message starts with '!'
 				if message.content.startswith('!'):
-					logging.info("Message starts with '!'. Ignoring message.")
-					return
-
-				# Check if the message author is ignored or if any ignored words are present in the message
-				ignored_users = config.get("IgnoredUsers", [])
-				ignored_words = config.get("IgnoredWords", [])
-				if message.author.id in ignored_users or any(word.lower() in message.content.lower() for word in ignored_words):
-					logging.info("Message from an ignored user or contains ignored words. Ignoring message.")
+					logging.debug("Message starts with '!'. Ignoring message.")
 					return
 
 				# Check if the message is in an allowed channel
@@ -604,8 +607,41 @@ async def start_bot():
 					if message.channel.id not in config["AllowedChannels"]:
 						logging.info("Message not in an allowed channel. Ignoring message.")
 						return
-
 				logging.info(f"Received message: {message.content}")
+
+				# Check if the message is from a DM
+				if message.channel.type == nextcord.ChannelType.private:
+					if str(message.author.id) in config["AllowedDMUsers"] or config["AllowDMResponses"]:
+						await message.channel.send("I Cannot talk here. Please try a regular Channel.")
+						logging.info("Message is from a DM.")
+						# Process the message here
+						return
+								# Check if the message author is ignored or if any ignored words are present in the message
+				ignored_users = config.get("IgnoredUsers", [])
+				ignored_words = config.get("IgnoredWords", [])
+
+				# Check if the message author is ignored
+				if message.author.id in ignored_users:
+					logging.info("Message is from an ignored user. Ignoring message.")
+					await message.channel.send("I'm sorry, I cannot talk to you.")
+					return
+
+				# Check if any ignored words are present in the message
+				if any(word.lower() in message.content.lower() for word in ignored_words):
+					logging.info("Message contains ignored words. Ignoring message.")
+					return
+				else:
+					# Check if the bot's name is mentioned
+					bot_name = config["Name"]
+					if config.get("OnlyWhenCalled") and bot_name.lower() not in message.content.lower():
+						logging.info("Message does not contain bot name. Ignoring message.")
+						return
+					else:
+						logging.info("Message contains bot name or bot is configured to respond without mention.")
+						# Process the message here
+
+				logging.debug(f"Received message: {message.content}")
+				
 
 				# Process messages without further checks
 				if "draw" in message.content.lower() or "send" in message.content.lower():
