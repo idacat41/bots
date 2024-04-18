@@ -1,3 +1,5 @@
+from pyexpat.errors import messages
+from typing import Self
 import nextcord
 from math import log
 from openai import OpenAI
@@ -17,6 +19,7 @@ import sys
 import threading
 from watchdog.observers.polling import PollingObserver
 from watchdog.events import FileSystemEventHandler
+from nextcord import Interaction, TextChannel, Message
 
 # Token Bucket class for rate limiting
 class TokenBucket:
@@ -37,23 +40,23 @@ class TokenBucket:
 		else:
 			return False
 
-# Add message to message history
-def add_message_to_history(role, user_id, user_name, message_content, user_message_histories, history_file_name):
+# Add interaction to interaction history
+def add_interaction_to_history(role, user_id, user_name, interaction_content, user_interaction_histories, history_file_name):
 	try:
-		if user_id not in user_message_histories:
-			user_message_histories[user_id] = []
-		# Add the message to the history
-		user_message_histories[user_id].append({'role': role, 'name': user_name, 'content': message_content})
+		if user_id not in user_interaction_histories:
+			user_interaction_histories[user_id] = []
+		# Add the interaction to the history
+		user_interaction_histories[user_id].append({'role': role, 'name': user_name, 'content': interaction_content})
 		# Fix the calculation of total_character_count to handle NoneType
-		total_character_count = sum(len(entry['content']) for entry in user_message_histories.get(user_id, []) if entry is not None)
+		total_character_count = sum(len(entry['content']) for entry in user_interaction_histories.get(user_id, []) if entry is not None)
 		while total_character_count > 6000:
-			oldest_entry = user_message_histories[user_id].pop(0)
+			oldest_entry = user_interaction_histories[user_id].pop(0)
 			total_character_count -= len(oldest_entry['content'])
 		with open(history_file_name, 'w') as file:
-			json.dump(user_message_histories, file)
+			json.dump(user_interaction_histories, file)
 		logging.debug("Message added to history and saved to file successfully.")
 	except Exception as e:
-		logging.error("An error occurred while writing to the JSON file in add_message_to_history: " + str(e))
+		logging.error("An error occurred while writing to the JSON file in add_interaction_to_history: " + str(e))
 
 
 # Define a class to handle file system events
@@ -91,6 +94,16 @@ def load_config(config_path):
 		logging.error("An error occurred while loading config: " + str(e))
 	return None
 
+async def start_typing(interaction):
+    # Define the "typing" text and the delay between each character
+    typing_text = "Typing..."
+    typing_delay = 0.1  # Adjust as needed
+    
+    channel = interaction.channel   # get the Channel object from interaction
+        
+    for _ in typing_text:
+        await channel.trigger_typing()
+        await asyncio.sleep(typing_delay)   # Pause before the next character
 
 # Adjusted load_config function with threaded file monitoring
 def load_config_with_observer(config_path):
@@ -115,132 +128,143 @@ def load_config_with_observer(config_path):
 	return config
 
 
-# Load existing message histories from file
-def load_message_histories(history_file_name):
+# Load existing interaction histories from file
+def load_interaction_histories(history_file_name):
 	try:
 		if os.path.exists(history_file_name):
 			with open(history_file_name, 'r') as file:
-				message_histories = json.load(file)
-				return message_histories if message_histories is not None else {}
+				interaction_histories = json.load(file)
+				return interaction_histories if interaction_histories is not None else {}
 		else:
-			logging.info("Message history file not found in load_message_histories. Creating a new one.")
+			logging.info("Message history file not found in load_interaction_histories. Creating a new one.")
 			with open(history_file_name, 'w') as file:
-				json.dump({}, file)  # Create a new empty message history file
+				json.dump({}, file)  # Create a new empty interaction history file
 			return {}
 	except Exception as e:
-		logging.error("An error occurred while loading message histories in load_message_histories: " + str(e))
+		logging.error("An error occurred while loading interaction histories in load_interaction_histories: " + str(e))
 		return {}
 
-# Save message histories to file
-def save_message_histories(history_file_name, user_message_histories):
+# Save interaction histories to file
+def save_interaction_histories(history_file_name, user_interaction_histories):
 	try:
 		with open(history_file_name, 'w') as file:
-			json.dump(user_message_histories, file)
-		logging.debug("Message histories saved to file successfully in save_message_histories.")
+			json.dump(user_interaction_histories, file)
+		logging.debug("Message histories saved to file successfully in save_interaction_histories.")
 	except Exception as e:
-		logging.error("An error occurred while saving message histories in save_message_histories: " + str(e))
+		logging.error("An error occurred while saving interaction histories in save_interaction_histories: " + str(e))
 
-async def generate_response(config, user_id, user_message_histories, message=None, additional_instructions=None, prompt=None, include_personality=True, upscale=False):
+async def generate_response(config, user_id, user_interaction_histories, interaction=None, additional_instructions=None, prompt=None, include_personality=True, upscale=False):
 	try:
-		# Initialize OpenAI client with host and API key
-		client = OpenAI(
-			base_url=config["OpenAPIEndpoint"],
-			api_key=config["OpenAPIKey"]
-		)
+		client = OpenAI(base_url=config["OpenAPIEndpoint"], api_key=config["OpenAPIKey"])
+		return await try_generate_response(client, config, user_id, user_interaction_histories, interaction, additional_instructions, prompt, include_personality)
+	except Exception as e:
+		logging.error("An error occurred during OpenAI API call: " + str(e))
+		try:
+			# If primary client fails, try with secondary client
+			if config["SecondaryOpenAPIEndpoint"] and config["SecondaryOpenAPIKey"]:
+				client = OpenAI(base_url=config["SecondaryOpenAPIEndpoint"], api_key=config["SecondaryOpenAPIKey"])
+				return await try_generate_response(client, config, user_id, user_interaction_histories, interaction, additional_instructions, prompt, include_personality)
+		except Exception as e:
+			logging.error(f"An error occurred during second OpenAI API call: {str(e)}")
+			if interaction:	
+				await interaction.channel.send("I can't talk right now please try back later.")		
+			raise  # Re-raise the exception to propagate it back to the caller
 
-		# Determine recent message content
-		recent_message_content = ""
-		if user_id in user_message_histories and user_message_histories[user_id]:
-			recent_message_content = user_message_histories[user_id][-2]['content'] if len(user_message_histories[user_id]) > 1 else ""
-		logging.debug(f"Recent message content: {recent_message_content}")
+async def try_generate_response(client, config, user_id, user_interaction_histories, interaction, additional_instructions, prompt, include_personality):
+	try:
+			# Determine recent interaction content
+			recent_interaction_content = ""
+			if user_id in user_interaction_histories and user_interaction_histories[user_id]:
+				recent_interaction_content = user_interaction_histories[user_id][-2]['content'] if len(user_interaction_histories[user_id]) > 1 else ""
+			logging.debug(f"Recent interaction content: {recent_interaction_content}")
 
-		# Construct messages
-		messages = []
+			# Construct interactions
+			interactions = []
 
-		# Include additional instructions
-		if additional_instructions:
-			messages.extend(additional_instructions)
-			logging.info("Included additional instructions.")
+			# Include additional instructions
+			if additional_instructions:
+				interactions.extend(additional_instructions)
+				logging.info("Included additional instructions.")
 
-		# Include personality message
-		if include_personality:
-			personality_command = f"You are {config['Personality']}."
-			messages.append({'role': 'system', 'content': personality_command})
-			logging.info("Included personality message.")
+			# Include personality interaction
+			if include_personality:
+				personality_command = f"You are {config['Personality']}."
+				interactions.append({'role': 'system', 'content': personality_command})
+				logging.info("Included personality interaction.")
 
-		# Include recent message content if prompt is None
-		if recent_message_content and (message is None or recent_message_content != message.content) and prompt is None:
-			messages.append({'role': 'user', 'content': recent_message_content})
-			logging.info("Included recent user message.")
+			# Include recent interaction content if prompt is None
+			if recent_interaction_content and (interaction is None or recent_interaction_content != interaction.content) and prompt is None:
+				interactions.append({'role': 'user', 'content': recent_interaction_content})
+				logging.info("Included recent user interaction.")
 
-		# Include message content if provided and if prompt is None
-		if message and isinstance(message.content, str) and prompt is None:
-			messages.append({'role': 'user', 'content': message.content})
-			logging.info("Included message content from provided message.")
+			# Include interaction content if provided and if prompt is None
+			if interaction and isinstance(interaction.content, str) and prompt is None:
+				interactions.append({'role': 'user', 'content': interaction.content})
+				logging.info("Included interaction content from provided interaction.")
 
-		# Include prompt if provided and not None
-		if isinstance(prompt, str):
-			logging.info("Using provided prompt:")
-			logging.debug(prompt)
-			messages.append({'role': 'system', 'content': prompt})
+			# Include prompt if provided and not None
+			if isinstance(prompt, str):
+				logging.info("Using provided prompt:")
+				logging.debug(prompt)
+				interactions.append({'role': 'system', 'content': prompt})
 
-		logging.debug(f"Sending data to OpenAI: {messages}")
+			logging.debug(f"Sending data to OpenAI: {interactions}")
 
-		# Send request to OpenAI
-		response = client.chat.completions.create(
-			messages=messages,
-			model=config["OpenaiModel"]
-		)
+			# Send request to OpenAI
+			response = client.chat.completions.create(
+				messages=interactions,
+				model=config["OpenaiModel"]
+			)
 
-		logging.info("API response received.")
+			logging.info("API response received.")
+			logging.debug(response)
 
-		# Check the length of the response
-		response_text = response.choices[0].message.content
-		if len(response_text) > 2000:
-			# Split the response into chunks of 2000 characters
-			chunks = [response_text[i:i + 2000] for i in range(0, len(response_text), 2000)]
-			return chunks
-		else:
-			return [response_text]
+			# Check the length of the response
+			response_text = response.choices[0].message.content
+			if len(response_text) > 2000:
+				# Split the response into chunks of 2000 characters
+				chunks = [response_text[i:i + 2000] for i in range(0, len(response_text), 2000)]
+				return chunks
+			else:
+				return [response_text]
 
 	except Exception as e:
-		if message:
-			await message.channel.send("I can't talk right now please try back later.")
 		logging.error("An error occurred during OpenAI API call: " + str(e))
 		raise  # Re-raise the exception to propagate it back to the caller
 
 
 
-async def handle_image_generation(config, message, bucket, user_message_histories):
+async def handle_image_generation(config, interaction, bucket, user_interaction_histories,bot):
 	try:
+		await start_typing(interaction)	
 		if bucket.consume(1):
-			logging.info(f"Enough bucket tokens exist, running image generation for message: {message.content}")
+			logging.info(f"Enough bucket tokens exist, running image generation for interaction: {interaction.content}")
 			bot_name = config["Name"]
-			prompt, upscale, additional_instructions = parse_prompt(message.content, bot_name, config)
+			prompt, upscale, additional_instructions = parse_prompt(interaction.content, bot_name, config)
 
 			# Log the parsed prompt
 			logging.info("Parsed prompt in handle_image_generation:")
 			logging.debug(prompt)
 
 			# Check and load the current model
-			sd_model_checkpoint = await check_current_model(config,message)
+			sd_model_checkpoint = await check_current_model(config,interaction)
 
 			# Proceed only if the model is successfully loaded
 			if sd_model_checkpoint:
 				# Generate response using OpenAI API
-				openai_response = await generate_openai_response(config, message.author.id, user_message_histories, message, prompt, upscale, additional_instructions)
+				openai_response = await generate_openai_response(config, interaction.author.id, user_interaction_histories, interaction, prompt, upscale, additional_instructions)
 				logging.debug(openai_response)
 
 				# Generate image
 				image = await generate_image(config, prompt, upscale)
 
 				# Send image response
-				await send_image_response(message, image, openai_response, prompt=prompt)
+				await send_image_response(interaction, image, openai_response, prompt=prompt)
 			else:
-				await message.channel.send("Failed to fetch the model. Please try again later.")
+				await interaction.channel.send("Failed to fetch the model. Please try again later.")
 				logging.error("Failed to fetch the model. Skipping image generation.")
 		else:
-			await message.channel.send("I'm busy sketching for you. Please wait until I finish this one before asking for another.")
+			await interaction.channel.send("I'm busy sketching for you. Please wait until I finish this one before asking for another.")
 			logging.info("Image drawing throttled. Skipping draw request")
 	except Exception as e:
 		logging.error("An error occurred during image generation: " + str(e))
@@ -297,19 +321,19 @@ def parse_prompt(prompt, bot_name, config):
 		return "", upscale, []  # Return an empty list for additional_instructions
 
 
-async def generate_openai_response(config, user_id, user_message_histories, message, prompt, upscale, additional_instructions):
+async def generate_openai_response(config, user_id, user_interaction_histories, interaction, prompt, upscale, additional_instructions):
 	try:
 		
 		# Generate response using OpenAI API with additional instructions
-		response = await generate_response(config, user_id, user_message_histories, message, prompt=prompt, include_personality=False, upscale=upscale, additional_instructions=additional_instructions)
+		response = await generate_response(config, user_id, user_interaction_histories, interaction, prompt=prompt, include_personality=False, upscale=upscale, additional_instructions=additional_instructions)
 		logging.info("OpenAI response generated successfully in generate_openai_response.")
 		logging.debug(response)
 		
 		return response
 	except Exception as e:
 		logging.error("An error occurred during OpenAI response generation in generate_openai_response: " + str(e))
-		if message:
-			await message.channel.send("Your image request has been sent without additional processing.")
+		if interaction:
+			await interaction.channel.send("Your image request has been sent without additional processing.")
 		return None
 
 
@@ -325,7 +349,7 @@ async def generate_image(config, prompt, upscale):
 		raise  # Re-raise the exception to propagate it back to the caller
 
 
-async def send_image_response(message, image, openai_response, prompt=""):
+async def send_image_response(interaction, image, openai_response, prompt=""):
 	try:
 		if openai_response:
 			prompt += " " + " ".join(openai_response)
@@ -340,17 +364,17 @@ async def send_image_response(message, image, openai_response, prompt=""):
 		file = nextcord.File(image_bytes, filename='output.png')
 
 		if openai_response:
-			if isinstance(message.channel, nextcord.DMChannel):
-				await message.author.send(file=file)
-				await message.author.send(openai_response[0])
+			if isinstance(interaction.channel, nextcord.DMChannel):
+				await interaction.author.send(file=file)
+				await interaction.author.send(openai_response[0])
 			else:
-				await message.channel.send(file=file)
-				await message.channel.send(openai_response[0])
+				await interaction.channel.send(file=file)
+				await interaction.channel.send(openai_response[0])
 		else:
-			if isinstance(message.channel, nextcord.DMChannel):
-				await message.author.send(file=file)
+			if isinstance(interaction.channel, nextcord.DMChannel):
+				await interaction.author.send(file=file)
 			else:
-				await message.channel.send(file=file)
+				await interaction.channel.send(file=file)
 		logging.info("Image response sent successfully in send_image_response.")
 	except Exception as e:
 		logging.error("An error occurred during sending image response in send_image_response: " + str(e))
@@ -389,7 +413,7 @@ async def fetch_options(config):
 		logging.error(f"An error occurred while fetching options from the Stable Diffusion API in fetch_options: {e}")
 		raise
 
-async def check_current_model(config, message):
+async def check_current_model(config, interaction):
 	try:
 		options = await fetch_options(config)
 		# logging.debug("Received options from the API in check_current_model: %s", options)
@@ -400,12 +424,12 @@ async def check_current_model(config, message):
 			configured_model_checkpoint = config["SDModel"]
 			if sd_model_checkpoint != configured_model_checkpoint:
 				logging.warning("Loaded model does not match configured model in check_current_model.")
-				if message:
-					logging.warning("Sending message to notify about model mismatch in check_current_model...")
-					if isinstance(message.channel, nextcord.DMChannel):
-						await message.author.send("Please wait, switching models...")
+				if interaction:
+					logging.warning("Sending interaction to notify about model mismatch in check_current_model...")
+					if isinstance(interaction.channel, nextcord.DMChannel):
+						await interaction.author.send("Please wait, switching models...")
 					else:
-						await message.channel.send("It may take me a bit of time to draw that picture. Please be patient")
+						await interaction.channel.send("It may take me a bit of time to draw that picture. Please be patient")
 				# Construct the JSON payload for the POST request
 				json_payload = {
 					"sd_model_checkpoint": configured_model_checkpoint
@@ -419,40 +443,40 @@ async def check_current_model(config, message):
 				logging.info("Loaded model matches configured model in check_current_model.")
 			return sd_model_checkpoint, configured_model_checkpoint
 		else:
-			error_message = "No 'sd_model_checkpoint' key found in API options."
-			logging.error(error_message)
-			raise RuntimeError(error_message)
+			error_interaction = "No 'sd_model_checkpoint' key found in API options."
+			logging.error(error_interaction)
+			raise RuntimeError(error_interaction)
 	except Exception as e:
 		logging.error(f"An error occurred in check_current_model: {e}")
 		raise e
 
 async def check_models(config):
-    async def fetch_models():
-        async with aiohttp.ClientSession() as session:
-            url = config["SDURL"] + "/sdapi/v1/sd-models"
-            async with session.get(url) as response:
-                response.raise_for_status()
-                available_models_data = await response.json()
-                logging.info("Models fetched successfully in fetch_models.")
-                return available_models_data
+	async def fetch_models():
+		async with aiohttp.ClientSession() as session:
+			url = config["SDURL"] + "/sdapi/v1/sd-models"
+			async with session.get(url) as response:
+				response.raise_for_status()
+				available_models_data = await response.json()
+				logging.info("Models fetched successfully in fetch_models.")
+				return available_models_data
 
-    try:
-        available_models_data = await fetch_models()
-        available_models = [model['model_name'] for model in available_models_data]
-        logging.info("Options fetched successfully in fetch_options.")
-        return available_models
-    except Exception as e:
-        error_message = f"An error occurred while checking available models: {str(e)}"
-        logging.error(error_message)
-        raise RuntimeError(error_message) from e
+	try:
+		available_models_data = await fetch_models()
+		available_models = [model['model_name'] for model in available_models_data]
+		logging.info("Options fetched successfully in fetch_options.")
+		return available_models
+	except Exception as e:
+		error_interaction = f"An error occurred while checking available models: {str(e)}"
+		logging.error(error_interaction)
+		raise RuntimeError(error_interaction) from e
 
-async def print_available_models(config,message):
-    available_models = await check_models(config)
-    if available_models:
-        models_available = "\n".join(available_models)
-        await message.channel.send(f"Here are the available models:\n{models_available}")
-    else:
-        await message.channel.send("Sorry there are no models available.")
+async def print_available_models(config,interaction):
+	available_models = await check_models(config)
+	if available_models:
+		models_available = "\n".join(available_models)
+		await interaction.channel.send(f"Here are the available models:\n{models_available}")
+	else:
+		await interaction.channel.send("Sorry there are no models available.")
 
 def prepare_json_payload(config, prompt, upscale):
 	try:
@@ -480,9 +504,9 @@ def prepare_json_payload(config, prompt, upscale):
 		logging.debug(f"{json_payload}")
 		return json_payload
 	except Exception as e:
-		error_message = f"An error occurred while preparing JSON payload: {str(e)}"
-		logging.error(error_message)
-		raise RuntimeError(error_message) from e
+		error_interaction = f"An error occurred while preparing JSON payload: {str(e)}"
+		logging.error(error_interaction)
+		raise RuntimeError(error_interaction) from e
 
 async def make_api_call(config, json_payload):
 	try:
@@ -517,37 +541,43 @@ def image_generated(image):
 		logging.error("An error occurred during image generation in image_generated: " + str(e))
 		return False
 
-async def send_message_in_thread(thread, content):
+async def send_interaction_in_thread(thread, content):
 	try:
 		await thread.send(content)
 	except Exception as e:
-		logging.error("An error occurred while sending message in thread: " + str(e))
+		logging.error("An error occurred while sending interaction in thread: " + str(e))
 
-# Function to handle message processing, modified to send responses in the thread
-async def handle_message_processing(config, message, user_message_histories, history_file_name):
+# Function to handle interaction processing, modified to send responses in the thread
+async def handle_interaction_processing(config, interaction, user_interaction_histories, history_file_name,bot):
 	try:
-		# Add user's message to history
-		add_message_to_history('user', message.author.id, message.author.display_name, message.content, user_message_histories, history_file_name)
-		async with message.channel.typing():
-			# Log the include_personality parameter before calling generate_response
-			logging.debug(f"include_personality parameter in handle_message_processing: {True}")
-			# Pass include_personality=True when calling generate_response
-			response = await generate_response(config, message.author.id, user_message_histories, message, include_personality=True)
+		# Add user's interaction to history
+		add_interaction_to_history('user', interaction.author.id, interaction.author.display_name, interaction.content, user_interaction_histories, history_file_name)
+		
+		# Start typing in another coroutine
+		await start_typing(interaction)
 
+		logging.debug(f"include_personality parameter in handle_interaction_processing: {True}")
+
+		# Pass include_personality=True when calling generate_response
+		openairesponse = await generate_response(config, interaction.author.id, user_interaction_histories, interaction, include_personality=True)
+
+		# typing_event.set()  # Stop the typing indicator when we get a response
+		
 		# Ensure response is a string
-		if isinstance(response, list):
-			response = ' '.join(response)
+		if isinstance(openairesponse, list):
+			openairesponse = ' '.join(openairesponse)
 
 		# Send the response to the user in the thread
-		if response:
-			chunks = split_into_chunks(response)
+		if openairesponse:
+			# logging.info(f"response from interaction processing",response)
+			chunks = split_into_chunks(openairesponse)
 			for chunk in chunks:
-				if isinstance(message.channel, nextcord.Thread):
-					await message.channel.send(chunk)
+				if isinstance(interaction.channel, nextcord.Thread):
+					await interaction.channel.send(chunk)
 				else:
-					await message.channel.send(chunk)
+					await interaction.channel.send(chunk)
 
-				# Add a short delay between messages
+				# Add a short delay between interactions
 				await asyncio.sleep(0.5)  # Adjust delay as needed
 	except Exception as e:
 		logging.error("An error occurred during message processing: " + str(e))
@@ -566,22 +596,23 @@ def split_into_chunks(response):
 	return chunks
 
 # Task queue for handling image generation
-async def image_generation_queue(config, message, bucket, user_message_histories):
+async def image_generation_queue(config, interaction, bucket, user_interaction_histories,bot):
 	try:
-		await handle_image_generation(config, message, bucket, user_message_histories)
+		await handle_image_generation(config, interaction, bucket, user_interaction_histories,bot)
 	except Exception as e:
 		logging.error("An error occurred in image generation queue: " + str(e))
 
-# Task queue for handling message processing
-async def message_processing_queue(config, message, user_message_histories, history_file_name):
+# Task queue for handling interaction processing
+async def interaction_processing_queue(config, interaction, user_interaction_histories, history_file_name,bot):
 	try:
-		await handle_message_processing(config, message, user_message_histories, history_file_name)
+		await handle_interaction_processing(config, interaction, user_interaction_histories, history_file_name,bot)
 	except Exception as e:
-		logging.error("An error occurred in message processing queue: " + str(e))
+		logging.error("An error occurred in interaction processing queue: " + str(e))
 
 def log_setup(config):
 	# Assuming "LogLevel" is a key in the config dictionary
 	log_level = config.get("LogLevel", "INFO")  # Default to INFO if LogLevel is not present
+	
 	logging.basicConfig(
 		level=log_level,
 		format="%(asctime)s [%(levelname)s] %(message)s",
@@ -607,12 +638,10 @@ config = load_config(config_path)
 async def start_bot():
 	try:
 		log_setup(config)
-		history_file_name = config["Name"] + "_message_histories.json"
-		user_message_histories = load_message_histories(history_file_name)
+		history_file_name = config["Name"] + "_interaction_histories.json"
+		user_interaction_histories = load_interaction_histories(history_file_name)
 		bucket = TokenBucket(capacity=3, refill_rate=0.5)
 		intents = nextcord.Intents.all()
-		intents.message_content = True
-		intents.guild_messages= True
 		bot = nextcord.AutoShardedClient(intents=intents)
 
 		@bot.event
@@ -620,76 +649,90 @@ async def start_bot():
 			logging.info(f'Logged in as {bot.user}')
 
 		@bot.event
-		async def on_message(message):
+		async def on_message(interaction):
 			try:
 				reload_config()
-				if message.author == bot.user:
+				if interaction.author == bot.user:
 					return
 
-				# Check if the message starts with '!'
-				if message.content.startswith('!'):
-					logging.debug("Message starts with '!'. Ignoring message.")
+				# Check if the interaction starts with '!'
+				if interaction.content.startswith('!'):
+					logging.debug("Message starts with '!'. Ignoring interaction.")
 					return
+				# Logging additional information about the interaction
+				logging.info(f"Received interaction from {interaction.author} in channel {interaction.channel}")
+				logging.debug(f"Interaction content: {interaction.content}")
 
-				# Check if the message is in an allowed channel
-				if not isinstance(message.channel, (nextcord.Thread, nextcord.DMChannel)):
-					if message.channel.id not in config["AllowedChannels"]:
-						logging.info("Message not in an allowed channel. Ignoring message.")
+				# Check if the interaction is in an allowed channel
+				if not isinstance(interaction.channel, (nextcord.Thread, nextcord.DMChannel)):
+					if interaction.channel.id not in config["AllowedChannels"]:
+						logging.info("Message not in an allowed channel. Ignoring interaction.")
 						return
-				logging.info(f"Received message: {message.content}")
+				logging.info(f"Received interaction: {interaction.content}")
 
-				# Check if the message is from a DM
+				# Check if the interaction is from a DM
 
-				if message.channel.type == nextcord.ChannelType.private and (not message.author.id in config["AllowedDMUsers" or config["AllowDMResponses"]]):				
-					await message.channel.send("I Cannot talk here. Please try a regular Channel.")
+				if interaction.channel.type == nextcord.ChannelType.private and (not interaction.author.id in config["AllowedDMUsers" or config["AllowDMResponses"]]):				
+					await interaction.channel.send("I Cannot talk here. Please try a regular Channel.")
 					logging.info("Message is from a DM.")
-					# Process the message here
+					# Process the interaction here
 					return
-					# Check if the message author is ignored or if any ignored words are present in the message
+					# Check if the interaction author is ignored or if any ignored words are present in the interaction
 				ignored_users = config.get("IgnoredUsers", [])
 				ignored_words = config.get("IgnoredWords", [])
 
-				if message.author.id in config["bot_user"]:
-					logging.info(f"Message author is ignored. Ignoring message.")
+				if interaction.author.id in config["bot_user"]:
+					logging.info(f"Message author is ignored. Ignoring interaction.")
 					return
 
-				# Check if the message author is ignored
-				if message.author.id in ignored_users and not config["bot_user"]:
-					logging.info("Message is from an ignored user. Ignoring message.")
-					await message.channel.send("I'm sorry, I cannot talk to you.")
+				# Check if the interaction author is ignored
+				if interaction.author.id in ignored_users and not config["bot_user"]:
+					logging.info("Message is from an ignored user. Ignoring interaction.")
+					await interaction.channel.send("I'm sorry, I cannot talk to you.")
 					return
 
-				# Check if any ignored words are present in the message
-				if any(word.lower() in message.content.lower() for word in ignored_words):
-					logging.info("Message contains ignored words. Ignoring message.")
+				# Check if any ignored words are present in the interaction
+				if any(word.lower() in interaction.content.lower() for word in ignored_words):
+					logging.info("Message contains ignored words. Ignoring interaction.")
 					return
-				else:
-					# Check if the bot's name is mentioned
-					bot_name = config["Name"]
-					if config.get("OnlyWhenCalled") and bot_name.lower() not in message.content.lower() or not message.channel.type == nextcord.ChannelType.private:
-						logging.info("Message does not contain bot name. Ignoring message.")
+
+				# Check if the bot's name is mentioned
+				bot_name = config["Name"]
+				if not interaction.channel.type == nextcord.ChannelType.private:
+					if config.get("OnlyWhenCalled") and bot_name.lower() not in interaction.content.lower():
+						logging.info("Message does not contain bot name. Ignoring interaction.")
 						return
-					else:
-						logging.info("Message contains bot name or bot is configured to respond without mention.")
-						# Process the message here
+				else:
+					logging.info("Message contains bot name or bot is configured to respond without mention.")
+						# Process the interaction here
 
-				logging.debug(f"Received message: {message.content}")
+				logging.debug(f"Received interaction: {interaction.content}")
 				
 
-				# Process messages without further checks
-				if "draw" in message.content.lower() or "send" in message.content.lower():
-					await message.channel.send("Hang on while I get that for you...")
-					await image_generation_queue(config, message, bucket, user_message_histories)
-				elif "check models" in message.content.lower():
-					await print_available_models(config,message)
-				elif "load model" in message.content.lower():
-					return
-				elif "join_vc" in message.content.lower():
-					return
+				# Process interactions without further checks
+				if "draw" in interaction.content.lower() or "send" in interaction.content.lower():
+					await interaction.channel.send("Hang on while I get that for you...")
+					await image_generation_queue(config, interaction, bucket, user_interaction_histories,bot)
+				elif "check models" in interaction.content.lower():
+					if interaction.channel.type == nextcord.ChannelType.private:
+						await print_available_models(config,interaction)
+					else: 
+						await interaction.channel.send("I'm sorry, I cannot run that here.")
+						return
+				elif "load model" in interaction.content.lower():
+					if interaction.channel.type == nextcord.ChannelType.private:
+						return
+					else:
+						await interaction.channel.send("I'm sorry, I cannot run that here.")
+				elif "join_vc" in interaction.content.lower():
+					if interaction.interaction.author != None:
+						return
+					else:
+						return 'You need to be in a voice channel to use this command'
 				else:
-					await message_processing_queue(config, message, user_message_histories, history_file_name)
+					await interaction_processing_queue(config, interaction, user_interaction_histories, history_file_name,bot)
 			except Exception as e:
-				logging.error("An error occurred during message handling: " + str(e))
+				logging.error("An error occurred during interaction handling: " + str(e))
 
 		await bot.start(config["DiscordToken"])
 	except Exception as e:
