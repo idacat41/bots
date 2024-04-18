@@ -472,11 +472,12 @@ def prepare_json_payload(config, prompt, upscale):
 			"denoising_strength": 0.5,
 			"override_settings_restore_afterwards": False,
 			"override_settings": {
-				"sd_model_checkpoint": config.get("SDModel")[0],
+				"sd_model_checkpoint": config.get("SDModel"),
 				"CLIP_stop_at_last_layers": config.get("SDClipSkip")
 			}
 		}
 		logging.info("JSON payload prepared successfully in prepare_json_payload.")
+		logging.debug(f"{json_payload}")
 		return json_payload
 	except Exception as e:
 		error_message = f"An error occurred while preparing JSON payload: {str(e)}"
@@ -639,8 +640,7 @@ async def start_bot():
 
 				# Check if the message is from a DM
 
-				if message.channel.type == nextcord.ChannelType.private and (not message.author.id in config["AllowedDMUsers" or config["AllowDMResponses"]]):
-				
+				if message.channel.type == nextcord.ChannelType.private and (not message.author.id in config["AllowedDMUsers" or config["AllowDMResponses"]]):				
 					await message.channel.send("I Cannot talk here. Please try a regular Channel.")
 					logging.info("Message is from a DM.")
 					# Process the message here
@@ -649,8 +649,12 @@ async def start_bot():
 				ignored_users = config.get("IgnoredUsers", [])
 				ignored_words = config.get("IgnoredWords", [])
 
+				if message.author.id in config["bot_user"]:
+					logging.info(f"Message author is ignored. Ignoring message.")
+					return
+
 				# Check if the message author is ignored
-				if message.author.id in ignored_users:
+				if message.author.id in ignored_users and not config["bot_user"]:
 					logging.info("Message is from an ignored user. Ignoring message.")
 					await message.channel.send("I'm sorry, I cannot talk to you.")
 					return
@@ -662,7 +666,7 @@ async def start_bot():
 				else:
 					# Check if the bot's name is mentioned
 					bot_name = config["Name"]
-					if config.get("OnlyWhenCalled") and bot_name.lower() not in message.content.lower():
+					if config.get("OnlyWhenCalled") and bot_name.lower() not in message.content.lower() or not message.channel.type == nextcord.ChannelType.private:
 						logging.info("Message does not contain bot name. Ignoring message.")
 						return
 					else:
@@ -679,6 +683,8 @@ async def start_bot():
 				elif "check models" in message.content.lower():
 					await print_available_models(config,message)
 				elif "load model" in message.content.lower():
+					return
+				elif "join_vc" in message.content.lower():
 					return
 				else:
 					await message_processing_queue(config, message, user_message_histories, history_file_name)
