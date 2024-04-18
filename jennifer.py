@@ -426,6 +426,34 @@ async def check_current_model(config, message):
 		logging.error(f"An error occurred in check_current_model: {e}")
 		raise e
 
+async def check_models(config):
+    async def fetch_models():
+        async with aiohttp.ClientSession() as session:
+            url = config["SDURL"] + "/sdapi/v1/sd-models"
+            async with session.get(url) as response:
+                response.raise_for_status()
+                available_models_data = await response.json()
+                logging.info("Models fetched successfully in fetch_models.")
+                return available_models_data
+
+    try:
+        available_models_data = await fetch_models()
+        available_models = [model['model_name'] for model in available_models_data]
+        logging.info("Options fetched successfully in fetch_options.")
+        return available_models
+    except Exception as e:
+        error_message = f"An error occurred while checking available models: {str(e)}"
+        logging.error(error_message)
+        raise RuntimeError(error_message) from e
+
+async def print_available_models(config,message):
+    available_models = await check_models(config)
+    if available_models:
+        models_available = "\n".join(available_models)
+        await message.channel.send(f"Here are the available models:\n{models_available}")
+    else:
+        await message.channel.send("Sorry there are no models available.")
+
 def prepare_json_payload(config, prompt, upscale):
 	try:
 		json_payload = {
@@ -647,6 +675,8 @@ async def start_bot():
 				if "draw" in message.content.lower() or "send" in message.content.lower():
 					await message.channel.send("Hang on while I get that for you...")
 					await image_generation_queue(config, message, bucket, user_message_histories)
+				elif "check models" in message.content.lower():
+					await print_available_models(config,message)
 				else:
 					await message_processing_queue(config, message, user_message_histories, history_file_name)
 			except Exception as e:
