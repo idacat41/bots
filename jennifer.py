@@ -638,13 +638,14 @@ async def start_bot():
 				logging.info(f"Received message: {message.content}")
 
 				# Check if the message is from a DM
-				if message.channel.type == nextcord.ChannelType.private:
-					if str(message.author.id) in config["AllowedDMUsers"] or config["AllowDMResponses"]:
-						await message.channel.send("I Cannot talk here. Please try a regular Channel.")
-						logging.info("Message is from a DM.")
-						# Process the message here
-						return
-								# Check if the message author is ignored or if any ignored words are present in the message
+
+				if message.channel.type == nextcord.ChannelType.private and (not message.author.id in config["AllowedDMUsers" or config["AllowDMResponses"]]):
+				
+					await message.channel.send("I Cannot talk here. Please try a regular Channel.")
+					logging.info("Message is from a DM.")
+					# Process the message here
+					return
+					# Check if the message author is ignored or if any ignored words are present in the message
 				ignored_users = config.get("IgnoredUsers", [])
 				ignored_words = config.get("IgnoredWords", [])
 
@@ -677,6 +678,8 @@ async def start_bot():
 					await image_generation_queue(config, message, bucket, user_message_histories)
 				elif "check models" in message.content.lower():
 					await print_available_models(config,message)
+				elif "load model" in message.content.lower():
+					return
 				else:
 					await message_processing_queue(config, message, user_message_histories, history_file_name)
 			except Exception as e:
