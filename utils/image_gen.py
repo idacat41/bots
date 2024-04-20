@@ -29,33 +29,34 @@ class TokenBucket:
 			return False
 
 
-async def handle_image_generation(config, interaction, user_interaction_histories, bot, draw_msg):
+async def handle_image_generation(config, message, user_message_histories, bot, draw_msg):
 	try:
+		
 		bucket = TokenBucket(capacity=3, refill_rate=0.5)
-		await start_typing(interaction)	
+		await start_typing(message)	
 		if bucket.consume(1):
-			logging.info(f"Enough bucket tokens exist, running image generation for interaction: {interaction.content}")
+			logging.info(f"Enough bucket tokens exist, running image generation for message: {message.content}")
 			bot_name = config["Name"]
-			prompt, upscale, additional_instructions = parse_prompt(interaction.content, bot_name, config)
+			prompt, upscale, additional_instructions = parse_prompt(message.content, bot_name, config)
 
 			# Log the parsed prompt
 			logging.info("Parsed prompt in handle_image_generation:")
 			logging.debug(prompt)
 
 			# Check and load the current model
-			sd_model_checkpoint = await check_current_model(config,interaction)
+			sd_model_checkpoint = await check_current_model(config, message,draw_msg)
 
 			# Proceed only if the model is successfully loaded
 			if sd_model_checkpoint:
 				# Generate response using OpenAI API
-				openai_response = await generate_openai_response(config, interaction.author.id, user_interaction_histories, interaction, prompt, upscale, additional_instructions)
+				openai_response = await generate_openai_response(config, message.author.id, user_message_histories, message, prompt, upscale, additional_instructions)
 				logging.debug(openai_response)
 
 				# Generate image
 				image = await generate_image(config, prompt, upscale)
 
 				# Send image response
-				await send_image_response(interaction, image, openai_response,draw_msg, prompt=prompt)
+				await send_image_response(message, image, openai_response, draw_msg, prompt=prompt)
 			else:
 				await draw_msg.edit("Failed to fetch the model. Please try again later.")
 				logging.error("Failed to fetch the model. Skipping image generation.")
@@ -64,7 +65,7 @@ async def handle_image_generation(config, interaction, user_interaction_historie
 			logging.info("Image drawing throttled. Skipping draw request")
 	except Exception as e:
 		logging.error("An error occurred during image generation: " + str(e))
-		await interaction.channel.send("I'm sorry, I was not able to do that for you. Please try again")
+		await message.channel.send("I'm sorry, I was not able to do that for you. Please try again")
 		pass
 
 def parse_prompt(prompt, bot_name, config):
@@ -118,19 +119,19 @@ def parse_prompt(prompt, bot_name, config):
 		return "", upscale, []  # Return an empty list for additional_instructions
 
 
-async def generate_openai_response(config, user_id, user_interaction_histories, interaction, prompt, upscale, additional_instructions):
+async def generate_openai_response(config, user_id, user_message_histories, message, prompt, upscale, additional_instructions):
 	try:
 		
 		# Generate response using OpenAI API with additional instructions
-		response = await generate_response(config, user_id, user_interaction_histories, interaction, prompt=prompt, include_personality=False, upscale=upscale, additional_instructions=additional_instructions)
+		response = await generate_response(config, user_id, user_message_histories, message, prompt=prompt, include_personality=False, upscale=upscale, additional_instructions=additional_instructions)
 		logging.info("OpenAI response generated successfully in generate_openai_response.")
 		logging.debug(response)
 		
 		return response
 	except Exception as e:
 		logging.error("An error occurred during OpenAI response generation in generate_openai_response: " + str(e))
-		if interaction:
-			await interaction.channel.send("Your image request has been sent without additional processing.")
+		if message:
+			await message.channel.send("Your image request has been sent without additional processing.")
 		return None
 
 
@@ -146,7 +147,7 @@ async def generate_image(config, prompt, upscale):
 		raise  # Re-raise the exception to propagate it back to the caller
 
 
-async def send_image_response(interaction, image, openai_response, draw_msg, prompt=""):
+async def send_image_response(message, image, openai_response, draw_msg, prompt=""):
 	try:
 		if openai_response:
 			prompt += " " + " ".join(openai_response)
@@ -161,21 +162,19 @@ async def send_image_response(interaction, image, openai_response, draw_msg, pro
 		file = nextcord.File(image_bytes, filename='output.png')
 
 		if openai_response:
-			if isinstance(interaction.channel, nextcord.DMChannel):
-				await draw_msg.delete()
-				await interaction.author.send(file=file)
-				await interaction.author.send(openai_response[0])
+			if isinstance(message.channel, nextcord.DMChannel):
+				await draw_msg.edit(file=file,content=openai_response[0])
+				# await message.author.send(openai_response[0])
 			else:
-				await draw_msg.delete()
-				await interaction.channel.send(file=file)
-				await interaction.channel.send(openai_response[0])
+				await draw_msg.edit(file=file,content=openai_response[0])
+				# await message.channel.send(openai_response[0])
 		else:
-			if isinstance(interaction.channel, nextcord.DMChannel):
+			if isinstance(message.channel, nextcord.DMChannel):
 				await draw_msg.delete()
-				await interaction.author.send(file=file)
+				await message.channel.send(file=file,content=openai_response)
 			else:
 				await draw_msg.delete()
-				await interaction.author.send(file=file)
+				await message.channel.send(file=file)
 		logging.info("Image response sent successfully in send_image_response.")
 	except Exception as e:
 		logging.error("An error occurred during sending image response in send_image_response: " + str(e))
@@ -215,7 +214,7 @@ async def fetch_options(config):
 		logging.error(f"An error occurred while fetching options from the Stable Diffusion API in fetch_options: {e}")
 		raise
 
-async def check_current_model(config, interaction):
+async def check_current_model(config, message,draw_msg):
 	try:
 		options = await fetch_options(config)
 		# logging.debug("Received options from the API in check_current_model: %s", options)
@@ -226,12 +225,12 @@ async def check_current_model(config, interaction):
 			configured_model_checkpoint = config["SDModel"]
 			if sd_model_checkpoint != configured_model_checkpoint:
 				logging.warning("Loaded model does not match configured model in check_current_model.")
-				if interaction:
-					logging.warning("Sending interaction to notify about model mismatch in check_current_model...")
-					if isinstance(interaction.channel, nextcord.DMChannel):
-						await interaction.author.send("Please wait, switching models...")
+				if message:
+					logging.warning("Sending message to notify about model mismatch in check_current_model...")
+					if isinstance(message.channel, nextcord.DMChannel):
+						await draw_msg.edit(content=draw_msg.content + "\n" + "Please wait, switching models...")
 					else:
-						await interaction.channel.send("It may take me a bit of time to do that. Please be patient")
+						await draw_msg.edit(content=draw_msg.content + "\n" + "It may take me a bit of time to do that. Please be patient")
 				# Construct the JSON payload for the POST request
 				json_payload = {
 					"sd_model_checkpoint": configured_model_checkpoint
@@ -245,9 +244,9 @@ async def check_current_model(config, interaction):
 				logging.info("Loaded model matches configured model in check_current_model.")
 			return sd_model_checkpoint, configured_model_checkpoint
 		else:
-			error_interaction = "No 'sd_model_checkpoint' key found in API options."
-			logging.error(error_interaction)
-			raise RuntimeError(error_interaction)
+			error_message = "No 'sd_model_checkpoint' key found in API options."
+			logging.error(error_message)
+			raise RuntimeError(error_message)
 	except Exception as e:
 		logging.error(f"An error occurred in check_current_model: {e}")
 		raise e
@@ -268,17 +267,17 @@ async def check_models(config):
 		logging.info("Options fetched successfully in fetch_options.")
 		return available_models
 	except Exception as e:
-		error_interaction = f"An error occurred while checking available models: {str(e)}"
-		logging.error(error_interaction)
-		raise RuntimeError(error_interaction) from e
+		error_message = f"An error occurred while checking available models: {str(e)}"
+		logging.error(error_message)
+		raise RuntimeError(error_message) from e
 
-async def print_available_models(config,interaction):
+async def print_available_models(config,message):
 	available_models = await check_models(config)
 	if available_models:
 		models_available = "\n".join(available_models)
-		await interaction.channel.send(f"Here are the available models:\n{models_available}")
+		await message.channel.send(f"Here are the available models:\n{models_available}")
 	else:
-		await interaction.channel.send("Sorry there are no models available.")
+		await message.channel.send("Sorry there are no models available.")
 
 def prepare_json_payload(config, prompt, upscale):
 	try:
@@ -306,9 +305,9 @@ def prepare_json_payload(config, prompt, upscale):
 		logging.debug(f"{json_payload}")
 		return json_payload
 	except Exception as e:
-		error_interaction = f"An error occurred while preparing JSON payload: {str(e)}"
-		logging.error(error_interaction)
-		raise RuntimeError(error_interaction) from e
+		error_message = f"An error occurred while preparing JSON payload: {str(e)}"
+		logging.error(error_message)
+		raise RuntimeError(error_message) from e
 
 async def make_api_call(config, json_payload):
 	try:
@@ -335,6 +334,7 @@ def process_response(response):
 		logging.error("An error occurred while processing API response in process_response: " + str(e))
 		return None
 
+
 # Check if image is generated
 def image_generated(image):
 	try:
@@ -343,8 +343,8 @@ def image_generated(image):
 		logging.error("An error occurred during image generation in image_generated: " + str(e))
 		return False
 
-async def send_interaction_in_thread(thread, content):
+async def send_message_in_thread(thread, content):
 	try:
 		await thread.send(content)
 	except Exception as e:
-		logging.error("An error occurred while sending interaction in thread: " + str(e))
+		logging.error("An error occurred while sending message in thread: " + str(e))
