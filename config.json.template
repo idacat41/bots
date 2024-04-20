@@ -1,0 +1,80 @@
+{
+    "LogLevel":"INFO",
+    "DiscordToken":""
+    "AllowDMResponses":false,
+    "AllowedDMUsers": [],
+    "AllowedChannels": []
+    "IgnoredUsers":[],
+    "bot_user":[],
+    "IgnoredWords":[],
+    "TypingDelay": 1,
+    "OnlyWhenCalled": false,    
+    "OpenAPIEndpoint":"",
+    "OpenAPIKey":"",
+    "SecondaryOpenAPIEndpoint":"",
+    "SecondaryOpenAPIKey":"",
+    "OpenaiModel":"",
+    "OpenaiCharacter":"",
+    "SDURL":"",
+    "SDPositivePrompt":"",
+    "SDNegativePrompt":"",
+    "SDSteps":8,
+    "SDHeight":1024,
+    "SDWidth":512,
+    "SDConfig":2,
+    "SDClipSkip":0,
+    "SDSampler": "",
+    "SDModel": "",
+    "SDOpenAI": "Here is a guide to make prompts for a generative AI stable diffusion models text to image. Only reply with only the prompt you are asked to create.",
+    "steps": {
+        "1": {
+            "title": "Text Description",
+            "description": "Start with a detailed textual description of the image you want to generate. This description should be as specific as possible to guide the AI in creating the image. The more descriptive your prompt, the better, as anything not specified will be randomly defined by the AI."
+        },
+        "2": {
+            "title": "Parameters",
+            "description": "After the text description,you can add weight to words by using parenteses and colon with a integer like this (cat:1.2), you can also include parameters to further specify how the image should be generated. These parameters are preceded by two hyphens (`--`).",
+            "examples": [
+                {
+                    "name": "ar",
+                    "description": "This sets the aspect ratio of the image to 3:2. Aspect ratios greater than 2:1 are experimental and may produce unpredictable results."
+                },
+                {
+                    "name": "chaos",
+                    "description": "This sets the chaos level of the image to 30. The chaos parameter controls the randomness of the image generation process. The range is 0-100."
+                },
+                {
+                    "name": "q",
+                    "description": "This sets the quality of the image to 1. The quality parameter controls how much rendering quality time you want to spend. The default value is 1. It only accepts the values: .25, .5, and 1 for the current model. Larger values are rounded down to 1. It only influences the initial image generation."
+                },
+                {
+                    "name": "stylize",
+                    "description": "This sets the stylization level of the image to 800. This parameter influences how strongly Midjourney's default aesthetic style is applied to Jobs. The range is 0-1000."
+                }
+            ]
+        },
+        "3": {
+            "title": "Exclusion",
+            "description": "If you want to exclude certain elements from the image, you can add a `--no {element}` parameter."
+        }
+    },
+    "additional_steps": {
+        "title": "Image Style",
+        "description": "Define the style of your image.",
+        "title_subject": "Subject",
+        "description_subject": "Describe each subject well. If necessary, list the number of individuals.",
+        "title_environment": "Environment",
+        "description_environment": "Put your subjects in an environment to give context to your image.",
+        "title_lighting": "Lighting",
+        "description_lighting": "Specify the time of day to guide the lighting, colors, and contrasts of the image.",
+        "title_angle_of_view": "Angle of View",
+        "description_angle_of_view": "You can specify the viewing angle of the image.",
+        "title_final_prompt": "Final Prompt",
+        "description_final_prompt": "Combine the text description, parameters, weights, and the additional elements (image style, subject, environment, lighting, angle of view) to create the final prompt. Return only the final prompt as a single line."
+    },
+    "ComfyURL": ""
+    "UseComfy": false,
+    "Name": "",
+    "Personality":""
+    "Appearance": ""
+}
