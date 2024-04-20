@@ -2,3 +2,7 @@
 **/*.log*
 **/*.pyc
 .vscode/
+vision*
+jennifer_localai/
+comfy*
+workflow_*
