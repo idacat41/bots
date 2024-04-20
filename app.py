@@ -217,12 +217,12 @@ async def handle_messages(config, message, user_message_histories, history_file_
 		logging.info(f"Received message: {message.content}")
 
 		# Check if the message is from a DM
-		if message.channel.type == nextcord.ChannelType.private and (message.author.id in config ["AllowedDMUsers"] or config["AllowDMResponses"]):
+		if message.channel.type == nextcord.ChannelType.private and (message.author.id in config["AllowedDMUsers"] or not config["AllowDMResponses"]):
 			await message.channel.send("I Cannot talk here. Please try a regular Channel.")
 			logging.info("User: %s (%s)", message.author.name, message.author.id)
 			logging.info("Message is from an unauthorized DM.")
 			return
-		
+
 		if message.author.id in config["bot_user"]:
 			logging.info(f"Message author is ignored. Ignoring message.")
 			return	
