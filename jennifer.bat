@@ -1,2 +1,2 @@
 pip install -r requirements.txt
-python jennifer.py
+python app.py

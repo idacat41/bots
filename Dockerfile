@@ -28,4 +28,4 @@ RUN mkdir -p /app/config && chown -R 5678:5678 /app/config
 USER appuser
 
 # During debugging, this entry point will be overridden. For more information, please refer to https://aka.ms/vscode-docker-python-debug
-CMD ["python", "jennifer.py", "|", "logger", "-t", "app.py"]
+CMD ["python", "app.py", "|", "logger", "-t", "app.py"]
