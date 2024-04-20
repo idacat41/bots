@@ -1,0 +1,35 @@
+version: '3.4'
+services:
+  init:
+    image: busybox
+    volumes:
+      - ./config:/app/config  # Mount the ./config directory on the host to /app/config in the container
+    command: chown -R 5678:5678 /app/config
+    deploy:
+      mode: "replicated"
+      replicas: 1
+      restart_policy:
+        condition: none
+
+  jennifer:
+    user: "5678:5678"      # Set the UID:GID for the container
+    image: jennifer
+    container_name: jennifer
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"   # number of files or file count
+        max-size: '10m'
+    volumes:
+      - ./config:/app/config  # Mount the ./config directory on the host to /app/config in the container
+    # Grant access to Nvidia GPU (comment out deploy: and below if not using Nvidia variant)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,8 @@
+openai
+Pillow
+requests
+torch
+numpy
+libnacl
+watchdog
+nextcord[voice]
