@@ -3,7 +3,7 @@ import logging
 import re
 import json
 import io
-import nextcord
+import discord
 import aiohttp
 import base64
 from utility_functions import *
@@ -33,36 +33,37 @@ async def handle_image_generation(config, message, user_message_histories, bot, 
 	try:
 		
 		bucket = TokenBucket(capacity=3, refill_rate=0.5)
-		await start_typing(message)	
-		if bucket.consume(1):
-			logging.info(f"Enough bucket tokens exist, running image generation for message: {message.content}")
-			bot_name = config["Name"]
-			prompt, upscale, additional_instructions = parse_prompt(message.content, bot_name, config)
+		channel = message.channel
+		async with channel.typing():
+			if bucket.consume(1):
+				logging.info(f"Enough bucket tokens exist, running image generation for message: {message.content}")
+				bot_name = config["Name"]
+				prompt, upscale, additional_instructions = parse_prompt(message.content, bot_name, config)
 
-			# Log the parsed prompt
-			logging.info("Parsed prompt in handle_image_generation:")
-			logging.debug(prompt)
+				# Log the parsed prompt
+				logging.info("Parsed prompt in handle_image_generation:")
+				logging.debug(prompt)
 
-			# Check and load the current model
-			sd_model_checkpoint = await check_current_model(config, message,draw_msg)
+				# Check and load the current model
+				sd_model_checkpoint = await check_current_model(config, message,draw_msg)
 
-			# Proceed only if the model is successfully loaded
-			if sd_model_checkpoint:
-				# Generate response using OpenAI API
-				openai_response = await generate_openai_response(config, message.author.id, user_message_histories, message, prompt, upscale, additional_instructions)
-				logging.debug(openai_response)
+				# Proceed only if the model is successfully loaded
+				if sd_model_checkpoint:
+					# Generate response using OpenAI API
+					openai_response = await generate_openai_response(config, message.author.id, user_message_histories, message, prompt, upscale, additional_instructions)
+					logging.debug(openai_response)
 
-				# Generate image
-				image = await generate_image(config, prompt, upscale)
+					# Generate image
+					image = await generate_image(config, prompt, upscale)
 
-				# Send image response
-				await send_image_response(message, image, openai_response, draw_msg, prompt=prompt)
+					# Send image response
+					await send_image_response(message, image, openai_response, draw_msg, prompt=prompt)
+				else:
+					await draw_msg.edit("Failed to fetch the model. Please try again later.")
+					logging.error("Failed to fetch the model. Skipping image generation.")
 			else:
-				await draw_msg.edit("Failed to fetch the model. Please try again later.")
-				logging.error("Failed to fetch the model. Skipping image generation.")
-		else:
-			await draw_msg.edit("I'm busy sketching for you. Please wait until I finish this one before asking for another.")
-			logging.info("Image drawing throttled. Skipping draw request")
+				await draw_msg.edit("I'm busy sketching for you. Please wait until I finish this one before asking for another.")
+				logging.info("Image drawing throttled. Skipping draw request")
 	except Exception as e:
 		logging.error("An error occurred during image generation: " + str(e))
 		await message.channel.send("I'm sorry, I was not able to do that for you. Please try again")
@@ -159,22 +160,24 @@ async def send_image_response(message, image, openai_response, draw_msg, prompt=
 		image_bytes = io.BytesIO()
 		image.save(image_bytes, format='PNG')
 		image_bytes.seek(0)
-		file = nextcord.File(image_bytes, filename='output.png')
+		file = discord.File(image_bytes, filename='output.png')
 
 		if openai_response:
-			if isinstance(message.channel, nextcord.DMChannel):
-				await draw_msg.edit(file=file,content=openai_response[0])
+			if isinstance(message.channel, discord.DMChannel):
+				await draw_msg.add_files(file)
+				await draw_msg.edit(content=openai_response[0])
 				# await message.author.send(openai_response[0])
 			else:
-				await draw_msg.edit(file=file,content=openai_response[0])
+				await draw_msg.add_files(file)
+				await draw_msg.edit(content=openai_response[0])
 				# await message.channel.send(openai_response[0])
 		else:
-			if isinstance(message.channel, nextcord.DMChannel):
-				await draw_msg.delete()
-				await message.channel.send(file=file,content=openai_response)
+			if isinstance(message.channel, discord.DMChannel):
+				await draw_msg.add_files(file)
+				await draw_msg.edit(content=[])
 			else:
-				await draw_msg.delete()
-				await message.channel.send(file=file)
+				await draw_msg.add_files(file)
+				await draw_msg.edit(content=[])
 		logging.info("Image response sent successfully in send_image_response.")
 	except Exception as e:
 		logging.error("An error occurred during sending image response in send_image_response: " + str(e))
@@ -227,7 +230,7 @@ async def check_current_model(config, message,draw_msg):
 				logging.warning("Loaded model does not match configured model in check_current_model.")
 				if message:
 					logging.warning("Sending message to notify about model mismatch in check_current_model...")
-					if isinstance(message.channel, nextcord.DMChannel):
+					if isinstance(message.channel, discord.DMChannel):
 						await draw_msg.edit(content=draw_msg.content + "\n" + "Please wait, switching models...")
 					else:
 						await draw_msg.edit(content=draw_msg.content + "\n" + "It may take me a bit of time to do that. Please be patient")

@@ -8,11 +8,18 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 # Install vim for editing files if necessary
-RUN apt-get update && apt-get install -y vim
-
+RUN apt-get update && apt-get install -y vim ffmpeg libffi-dev python3-dev git python3-venv
+ARG VIRTUAL_ENV=/opt/venv
+RUN pip3 install uv
+RUN uv venv ${VIRTUAL_ENV}
+ENV PATH="${VIRTUAL_ENV}/bin:$PATH"
+ENV PYTHON_ENV=${VIRTUAL_ENV}
+COPY install_discord.sh .
 # Install pip requirements
+RUN chmod +x ./install_discord.sh
+RUN ./install_discord.sh
 COPY requirements.txt .
-RUN python -m pip install -r requirements.txt
+RUN uv pip install -r requirements.txt
 
 WORKDIR /app
 COPY . /app

@@ -1,10 +1,14 @@
 **/*config.json*
-*_message_histories_
+*_message_histories_*
 **/*.log*
 **/*.pyc
-.vscode/
+.vscode/*
 vision*
 jennifer_localai/
 comfy*
 workflow_*
 !config.json.template
+.env
+.devcontainer/
+function storage.py
+set_python_env.sh

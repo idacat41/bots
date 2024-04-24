@@ -1,17 +1,18 @@
-import nextcord
+import discord
+from discord import VoiceState
+from discord.ext import voice_recv
+from openai import AsyncOpenAI
+from openai import OpenAI
 from math import log
 import json
 import time
 import logging
 import asyncio
-from logging.handlers import TimedRotatingFileHandler
 import os
 import sys
-import threading
-from watchdog.observers.polling import PollingObserver
-from watchdog.events import FileSystemEventHandler
-from nextcord import message, TextChannel, Message
-import asyncio
+import aiohttp
+# from discord import message, TextChannel, Message
+import ffmpeg
 from collections import namedtuple
 # Import the utils package from a specific path '/utils/'
 sys.path.insert(0, './utils/')  # Add this path to system paths for Python to be able to find modules in it.
@@ -19,70 +20,10 @@ from utils import *
 from utils.image_gen import handle_image_generation
 from utils.image_gen import print_available_models
 from utils.interactions import handle_message_processing
-from utils import utility_functions
-from threading import Thread
+from utils.utility_functions import *
+import tracemalloc
 
-# Define a function to load the config
-def load_config(config_path):
-	try:
-		with open(config_path, "r") as file:
-			config = json.load(file)
-			# logging.debug(f"Config file  successfully loaded with content: {config}")
-		return config
-	except FileNotFoundError:
-		logging.error("Config file not found. Please check the file path.")
-	except PermissionError:
-		logging.error("Permission denied. Unable to open Config file.")
-	except Exception as e:
-		logging.error("An error occurred while loading config: " + str(e))
-	return None
-
-# Define a class to handle file system events
-class ConfigFileHandler(FileSystemEventHandler):
-	def __init__(self, config_path, on_change):
-		super().__init__()
-		self.config_path = config_path
-		self.on_change = on_change
-
-	def on_modified(self, event):
-		if event.src_path == self.config_path:
-			logging.info("Config file has been modified. Reloading config...")
-			self.on_change()
-		else:
-			logging.debug("Detected modification in a file, but it is not the config file.")
-
-# Define a function to observe config changes
-def observe_config_changes():
-    # Create a FileSystemEventHandler to watch the config file
-    handler = ConfigFileHandler(config_path, reload_config)
-    # Start observing the config file
-    observer = PollingObserver()
-    observer.schedule(handler, config_path, recursive=False)
-    observer.start()
-
-    try:
-        while True:
-            observer.join()
-    except  KeyboardInterrupt:
-        observer.stop()
-        observer.join()
-
-
-# Define a function to reload the config
-def reload_config():
-    global config
-    config = load_config(config_path)
-
-# Define the config path
-config_path = "./config/config.json"
-
-# Load the config initially
-config = load_config(config_path)
-
-# Start file system observer in a separate thread
-observer_thread = Thread(target=observe_config_changes, daemon=True)
-observer_thread.start()
-
+tracemalloc.start()
 
 # Load existing message histories from file
 def load_message_histories(history_file_name):
@@ -128,18 +69,17 @@ async def worker2(message_queue):
 image_queue = asyncio.Queue()
 message_queue = asyncio.Queue()
 
-def log_setup(config):
-	# Assuming "LogLevel" is a key in the config dictionary
-	log_level = config.get("LogLevel", "INFO")  # Default to INFO if LogLevel is not present
-	
-	logging.basicConfig(
-		level=log_level,
-		format="%(asctime)s [%(levelname)s] %(message)s",
-		handlers=[
-			TimedRotatingFileHandler("app.log", when="midnight", backupCount=7, encoding='utf-8'),
-			logging.StreamHandler(sys.stdout)
-		]
-	)
+async def join_voice_channel(ctx, voice_channel_id: int):
+	try:
+		channel = ctx.guild.get_channel(voice_channel_id)
+		vc = await channel.connect(cls=VoiceRecvClient)
+		logging.info(f"Joined voice channel: {channel}")
+		is_listening = vc.is_listening()
+		logging.info(f"Initial listening state: {is_listening}")
+		vc.handle_audio_processing(ctx)
+	except Exception as e:
+		logging.error(f"Error joining voice channel: {e}")
+		await ctx.channel.send("Unable to join the voice channel. Check my permissions.")
 
 # Get the current working directory
 cwd = os.getcwd()
@@ -153,6 +93,12 @@ config_path = os.path.join(cwd, "config", filename)
 # Now you can pass config_path to your load_config function
 config = load_config(config_path)
 
+async def check_and_leave_voice_channel (guild):
+	voice_client = guild.voice_client
+	if voice_client and voice_client.is_connected():
+		if len(voice_client.channel.members) == 1:
+			await voice_client.disconnect()
+
 # Define a function to start the sharded bot tasks
 import logging
 
@@ -163,12 +109,9 @@ async def start_bot():
 		log_setup(config)
 		history_file_name = config["Name"] + "_message_histories.json"
 		user_message_histories = load_message_histories(history_file_name)
-		intents = nextcord.Intents.all()
-		bot = nextcord.AutoShardedClient(intents=intents)
-			
-		# Load configuration
-		reload_config()  # Reload the config after setting up logging, this will help catch any errors that occur during config loading
-		
+		intents = discord.Intents.all()
+		bot = discord.AutoShardedClient(intents=intents)
+				
 		# Start worker tasks
 		asyncio.create_task(worker(image_queue))
 		asyncio.create_task(worker2(message_queue))
@@ -180,13 +123,28 @@ async def start_bot():
 		@bot.event
 		async def on_message(message):
 			try:
-				if message.author.id == bot.user.id:
+				# Ignore messages from all bot users
+				if message.author.bot:
+					logging.info("Message is from a Bot.")
 					return
 				# Handle messages here
 				await handle_messages(config, message, user_message_histories, history_file_name, bot, message_queue,image_queue)
 				
 			except Exception as e:
 				logging.error("An error occurred during message handling: %s", str(e))
+
+		@bot.event
+		async def on_voice_state_update(member, before, after):
+			voice_client = member.guild.voice_client
+			if voice_client and voice_client.is_connected():
+				if before.channel is None and after.channel is not None:
+					# User joined the voice channel
+					print(f"{member.name} joined the voice channel")
+				elif before.channel is not None and after.channel is None:
+					# User left the voice channel
+					print(f"{member.name} left the voice channel")
+					await check_and_leave_voice_channel(member.guild)
+
 		await bot.start(config["DiscordToken"])
 	except Exception as e:
 		logging.critical('Failed to start bot due to exception: %s', str(e))
@@ -209,7 +167,7 @@ async def handle_messages(config, message, user_message_histories, history_file_
 		logging.debug(f"message content: {message.content}")
 
 		# Check if the message is in an allowed channel
-		if not isinstance(message.channel, (nextcord.Thread, nextcord.DMChannel)):
+		if not isinstance(message.channel, (discord.Thread, discord.DMChannel)):
 			if message.channel.id not in config["AllowedChannels"]:
 				logging.info("Message not in an allowed channel. Ignoring message.")
 				return
@@ -217,10 +175,9 @@ async def handle_messages(config, message, user_message_histories, history_file_
 		logging.info(f"Received message: {message.content}")
 
 		# Check if the message is from a DM
-		if message.channel.type == nextcord.ChannelType.private and (message.author.id in config["AllowedDMUsers"] or not config["AllowDMResponses"]):
+		if message.channel.type == discord.ChannelType.private and (not message.author.id in config["AllowedDMUsers"] or not config["AllowDMResponses"]):                
 			await message.channel.send("I Cannot talk here. Please try a regular Channel.")
-			logging.info("User: %s (%s)", message.author.name, message.author.id)
-			logging.info("Message is from an unauthorized DM.")
+			logging.info("Message is from a DM.")
 			return
 
 		if message.author.id in config["bot_user"]:
@@ -240,7 +197,7 @@ async def handle_messages(config, message, user_message_histories, history_file_
 		
 		# Check if the bot's name is mentioned
 		bot_name = config["Name"]
-		if not message.channel.type == nextcord.ChannelType.private:
+		if not message.channel.type == discord.ChannelType.private:
 			if config.get("OnlyWhenCalled") and bot_name.lower() not in message.content.lower():
 				logging.info("Message does not contain bot name. Ignoring message.")
 				return
@@ -255,23 +212,49 @@ async def handle_messages(config, message, user_message_histories, history_file_
 			draw_msg = await message.channel.send("Hang on while I get that for you...")
 			image_queue.put_nowait(Draw_Task(config, message, user_message_histories, bot, draw_msg))
 		elif "check models" in message.content.lower():
-			if message.channel.type == nextcord.ChannelType.private:
+			if message.channel.type == discord.ChannelType.private:
 				await print_available_models(config,message)
 			else: 
 				await message.channel.send("I'm sorry, I cannot run that here.")
 				return
 		elif "load model" in message.content.lower():
-			if message.channel.type == nextcord.ChannelType.private:
+			if message.channel.type == discord.ChannelType.private:
 				return
 			else:
 				await message.channel.send("I'm sorry, I cannot run that here.")
 		elif "join_vc" in message.content.lower():
-			if message.message.author != None:
-				return
+			if message.author.voice:
+				try:
+					await join_voice_channel(message, message.author.voice.channel.id)
+				except Exception as e:
+					logging.error(f"Error occurred while joining voice channel: {e}")
+					await message.channel.send("I was unable to join voice channel.")
+					await message.channel.send("Please ensure that I have proper permissions to join voice channels.")
+					return
+				await message.add_reaction("👍")
+				await message.channel.send("Joined voice channel")
 			else:
-				return 'You need to be in a voice channel to use this command'
+				await message.channel.send('You need to be in a voice channel to use this command')
+				return
+		elif "leave_vc" in message.content.lower():
+			if message.author.voice:
+				voice_client = message.guild.voice_client
+				if voice_client and voice_client.is_connected():
+					await voice_client.disconnect()
+					await message.add_reaction("👋")
+					await message.channel.send("Left voice channel")
+			else:			
+				await message.channel.send('You need to be in a voice channel to use this command')
+				return		
 		else:
-			message_queue.put_nowait(Task(config, message, user_message_histories, bot, history_file_name))
+			if message.author.voice:
+					voice_client = message.guild.voice_client
+					if voice_client and voice_client.is_connected():
+						await VoiceRecvClient.process_recognized_speech(message.content, message)
+					else:
+						message_queue.put_nowait(Task(config, message, user_message_histories, bot, history_file_name))
+			else:
+				message_queue.put_nowait(Task(config, message, user_message_histories, bot, history_file_name))
 	except Exception as e:
 		logging.error("An error occurred during bot startup: " + str(e))
 

@@ -2,7 +2,7 @@ import logging
 import json
 from datetime import datetime
 from utility_functions import *
-import nextcord
+import discord
 
 # Add message to message history
 def add_message_to_history(role, user_id, user_name, message_content, user_message_histories, history_file_name):
@@ -36,16 +36,13 @@ async def handle_message_processing(config, message, user_message_histories, his
 	try:
 		# Add user's message to history
 		add_message_to_history('user', message.author.id, message.author.display_name, message.content, user_message_histories, history_file_name)
-		
+		channel = message.channel
 		# Start typing in another coroutine
-		await start_typing(message)
-
 		logging.debug(f"include_personality parameter in handle_message_processing: {True}")
 
 		# Pass include_personality=True when calling generate_response
-		openairesponse = await generate_response(config, message.author.id, user_message_histories, message, include_personality=True)
-
-		# typing_event.set()  # Stop the typing indicator when we get a response
+		async with channel.typing():
+			openairesponse = await generate_response(config, message.author.id, user_message_histories, message, include_personality=True)
 		
 		# Ensure response is a string
 		if isinstance(openairesponse, list):
@@ -56,7 +53,7 @@ async def handle_message_processing(config, message, user_message_histories, his
 			# logging.info(f"response from message processing",response)
 			chunks = split_into_chunks(openairesponse)
 			for chunk in chunks:
-				if isinstance(message.channel, nextcord.Thread):
+				if isinstance(message.channel, discord.Thread):
 					await message.channel.send(chunk)  # Use message.channel instead of message.followup
 				else:
 					await message.channel.send(chunk)  # Use message.channel instead of message.followup

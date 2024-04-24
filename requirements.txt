@@ -4,5 +4,13 @@ requests
 torch
 numpy
 libnacl
+pynacl
 watchdog
-nextcord[voice]
+discord.py[voice]
+discord-ext-voice-recv[extras]
+silero
+omegaconf 
+torchaudio
+aiohttp
+ffmpeg-python
+logmmse

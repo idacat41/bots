@@ -27,3 +27,4 @@
 **/*.log*
 LICENSE
 README.md
+**.devcontainer/*
