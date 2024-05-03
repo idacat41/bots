@@ -1,6 +1,5 @@
 import discord
 from discord import VoiceState
-from discord.ext import voice_recv
 from openai import AsyncOpenAI
 from openai import OpenAI
 from math import log
@@ -11,8 +10,8 @@ import asyncio
 import os
 import sys
 import aiohttp
+from discord.errors import *
 # from discord import message, TextChannel, Message
-import ffmpeg
 from collections import namedtuple
 # Import the utils package from a specific path '/utils/'
 sys.path.insert(0, './utils/')  # Add this path to system paths for Python to be able to find modules in it.
@@ -20,9 +19,9 @@ from utils import *
 from utils.image_gen import handle_image_generation
 from utils.image_gen import print_available_models
 from utils.interactions import handle_message_processing
+from utils.voice_recv_class import *
 from utils.utility_functions import *
 import tracemalloc
-
 tracemalloc.start()
 
 # Load existing message histories from file
@@ -77,9 +76,17 @@ async def join_voice_channel(ctx, voice_channel_id: int):
 		is_listening = vc.is_listening()
 		logging.info(f"Initial listening state: {is_listening}")
 		vc.handle_audio_processing(ctx)
+	except discord.errors.ClientException as e:
+		logging.error(f"Error joining voice channel: {e}")
+		await  ctx.channel.send("I do not have permission to join that voice channel. Please check my permissions.")
+	except discord.errors.InvalidData as e:
+		logging.error(f"Error joining voice channel: {e}")
+		await ctx.channel.send("Invalid voice channel ID. Please provide a valid ID.")
 	except Exception as e:
 		logging.error(f"Error joining voice channel: {e}")
 		await ctx.channel.send("Unable to join the voice channel. Check my permissions.")
+		raise e
+
 
 # Get the current working directory
 cwd = os.getcwd()
@@ -107,6 +114,7 @@ async def start_bot():
 		# Set up logging
 		config = load_config(config_path)
 		log_setup(config)
+		# logging.info(f"Config file successfully loaded with content: {config}")
 		history_file_name = config["Name"] + "_message_histories.json"
 		user_message_histories = load_message_histories(history_file_name)
 		intents = discord.Intents.all()
@@ -174,18 +182,23 @@ async def handle_messages(config, message, user_message_histories, history_file_
 		
 		logging.info(f"Received message: {message.content}")
 
-		# Check if the message is from a DM
-		if message.channel.type == discord.ChannelType.private and (not message.author.id in config["AllowedDMUsers"] or not config["AllowDMResponses"]):                
-			await message.channel.send("I Cannot talk here. Please try a regular Channel.")
-			logging.info("Message is from a DM.")
-			return
+		# Check if the message is from  a DM
+		if message.channel.type == discord.ChannelType.private:
+			if message.author.id in config["AllowedDMUsers"]:
+				# Allow the message from an allowed DM user
+				pass
+			elif not config["AllowDMResponses"]:
+				# Ignore the message if  DM responses are not allowed
+				await message.channel.send("I Cannot talk here. Please try a regular Channel.")
+				logging.info("Message is from a DM.")
+				return
 
 		if message.author.id in config["bot_user"]:
 			logging.info(f"Message author is ignored. Ignoring message.")
 			return	
 
 		# Check if the message author is ignored
-		if message.author.id in ignored_users and not bot["bot_user"]:
+		if message.author.id in ignored_users and not config["bot_user"]:
 			logging.info("Message is from an ignored user. Ignoring message.")
 			await message.channel.send("I'm sorry, I cannot talk to you.")
 			return
@@ -219,10 +232,16 @@ async def handle_messages(config, message, user_message_histories, history_file_
 				return
 		elif "load model" in message.content.lower():
 			if message.channel.type == discord.ChannelType.private:
-				return
+				try:
+					load_msg = await message.channel.send(f"Loading model {message.content[10:]}.")
+					await load_model(config,message)
+					await load_msg.edit(content=load_msg.content + "\n" + "Model loaded successfully.")
+					return
+				except:
+					await load_msg.edit(content= "I am sorry there is a problem with my camera.")
 			else:
 				await message.channel.send("I'm sorry, I cannot run that here.")
-		elif "join_vc" in message.content.lower():
+		elif "join_vc" in message.content.lower() or "join-vc" in message.content.lower():
 			if message.author.voice:
 				try:
 					await join_voice_channel(message, message.author.voice.channel.id)
@@ -236,7 +255,7 @@ async def handle_messages(config, message, user_message_histories, history_file_
 			else:
 				await message.channel.send('You need to be in a voice channel to use this command')
 				return
-		elif "leave_vc" in message.content.lower():
+		elif "leave_vc" in message.content.lower() or "leave-vc" in message.content.lower():
 			if message.author.voice:
 				voice_client = message.guild.voice_client
 				if voice_client and voice_client.is_connected():
@@ -246,15 +265,24 @@ async def handle_messages(config, message, user_message_histories, history_file_
 			else:			
 				await message.channel.send('You need to be in a voice channel to use this command')
 				return		
-		else:
-			if message.author.voice:
-					voice_client = message.guild.voice_client
-					if voice_client and voice_client.is_connected():
-						await VoiceRecvClient.process_recognized_speech(message.content, message)
-					else:
-						message_queue.put_nowait(Task(config, message, user_message_histories, bot, history_file_name))
+		elif message.guild:   # Check for guild and voice channel presence before sending to message_queue
+			# Check for voice channel presence and bot and user connection
+			voice_channel = None
+			for channel in message.guild.channels:
+				if channel.type == discord.ChannelType.voice:
+					voice_channel = channel
+					break
+			if voice_channel and message.author.voice:
+				async with channel.typing():
+					await VoiceRecvClient.process_recognized_speech(message.content, message)
 			else:
-				message_queue.put_nowait(Task(config, message, user_message_histories, bot, history_file_name))
+				# Check if the message was sent in a DM channel
+				if message.channel.type == discord.ChannelType.private:
+					message_queue.put_nowait(Task(config, message, user_message_histories, bot, history_file_name))
+				else:
+					message_queue.put_nowait(Task(config, message, user_message_histories, bot, history_file_name))
+		else:
+			message_queue.put_nowait(Task(config, message, user_message_histories, bot, history_file_name))
 	except Exception as e:
 		logging.error("An error occurred during bot startup: " + str(e))
 

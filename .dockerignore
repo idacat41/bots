@@ -28,3 +28,5 @@
 LICENSE
 README.md
 **.devcontainer/*
+./.cache*
+./.vscode-server*

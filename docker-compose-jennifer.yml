@@ -1,0 +1,91 @@
+x-base_service: &base_service
+  ports:
+    - "${WEBUI_PORT:-7860}:7860"
+  volumes:
+    - &v1 ../data:/data
+    - &v2 ../output:/output
+  stop_signal: SIGKILL
+  tty: true
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            capabilities: [compute, utility]
+
+name: jennifer
+
+services:
+  jennifer-text-backend:
+    # build:
+    #   dockerfile: localai-subsystem-dockerfile-gpu
+      # no_cache: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    image: lunamidori5/midori_ai_subsystem_localai_gpu:master
+    tty: true # enable colorized logs
+    restart: always # should this be on-failure ?
+    ports:
+      - 38079:8080
+    env_file:
+      - ../.env
+    volumes:
+      - /var/lib/docker/volumes/midoriai_midori-ai-models/_data:/models
+      - /var/lib/docker/volumes/midoriai_midori-ai-images/_data:/tmp/generated/images/
+      - /var/lib/docker/volumes/midoriai_midori-ai-audio/_data:/tmp/generated/audio/
+    command: ["/usr/bin/local-ai"]
+
+  stable-diffusion-jennifer: &automatic
+    <<: *base_service
+    build: ../services/AUTOMATIC1111
+    image: idacat411/stable-diffusion:latest
+    tty: true # enable colorized logs
+    restart: always # should this be on-failure ?
+    environment:
+      - CLI_ARGS=--allow-code --medvram --xformers --enable-insecure-extension-access --api
+
+  init:
+    image: busybox
+    volumes:
+      - ./config:/app/config
+    command: chown -R 5678:5678 /app/config
+    deploy:
+      mode: "replicated"
+      replicas: 1
+      restart_policy:
+        condition: none
+
+  jennifer:
+    user: "5678:5678"
+    image: idacat411/jennifer:latest
+    container_name: jennifer
+    build:
+      context: .
+      # no_cache: true
+    logging:
+      driver: json-file
+      options:
+        max-file: "3"
+        max-size: '10m'
+    volumes:
+      - ./config/config.json:/app/config/config.json
+    tty: true # enable colorized logs
+    restart: always # should this be on-failure ?
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  download:
+    build: ../services/download/
+    profiles: ["download"]
+    volumes:
+      - *v1

@@ -54,7 +54,7 @@ async def handle_image_generation(config, message, user_message_histories, bot, 
 					logging.debug(openai_response)
 
 					# Generate image
-					image = await generate_image(config, prompt, upscale)
+					image = await generate_image(config, openai_response, upscale)
 
 					# Send image response
 					await send_image_response(message, image, openai_response, draw_msg, prompt=prompt)
@@ -66,7 +66,7 @@ async def handle_image_generation(config, message, user_message_histories, bot, 
 				logging.info("Image drawing throttled. Skipping draw request")
 	except Exception as e:
 		logging.error("An error occurred during image generation: " + str(e))
-		await message.channel.send("I'm sorry, I was not able to do that for you. Please try again")
+		await draw_msg.edit(content="I'm sorry, I was not able to do that for you. Please try again")
 		pass
 
 def parse_prompt(prompt, bot_name, config):
@@ -88,9 +88,7 @@ def parse_prompt(prompt, bot_name, config):
 			{
 				'role': 'system',
 				'content': {
-					'SDOpenAI': config.get("SDOpenAI", ""),
-					'steps': config.get("steps", {}),
-					'additional_steps': config.get("additional_steps", {})
+					'SDOpenAI': config.get("SDOpenAI", "")
 				}
 			}
 		]
@@ -100,7 +98,7 @@ def parse_prompt(prompt, bot_name, config):
 		if "selfie" in prompt or "you" in prompt:
 			prompt = prompt.replace(bot_name, "").strip()
 			logging.info("The prompt contains Selfie so we are appending Appearance to the prompt.")
-			appearance_info = [{'role': 'system', 'content': config.get("Appearance", prompt)}]
+			appearance_info = [{'role': 'user', 'content': config.get("Appearance", prompt)}]
 
 		else:
 			# Remove bot's name from the prompt
@@ -113,6 +111,7 @@ def parse_prompt(prompt, bot_name, config):
 		
 		# Construct prompt with additional_instructions, appearance_info, and prompt
 		prompt = json.dumps(additional_instructions + appearance_info) + " " + prompt
+		logging.info(prompt)
 		
 		return prompt, upscale, additional_instructions
 	except Exception as e:
@@ -187,7 +186,7 @@ async def send_image_response(message, image, openai_response, draw_msg, prompt=
 async def stable_diffusion_generate_image(config, prompt, upscale):
 	try:
 		json_payload = prepare_json_payload(config, prompt, upscale)
-		logging.debug(json.dumps(json_payload))
+		logging.info(json.dumps(json_payload))
 		if json_payload:
 			logging.info(f"JSON Payload complete, Making API Call.")
 			response = await make_api_call(config, json_payload)
@@ -221,11 +220,10 @@ async def check_current_model(config, message,draw_msg):
 	try:
 		options = await fetch_options(config)
 		# logging.debug("Received options from the API in check_current_model: %s", options)
-
 		# Check if the 'sd_model_checkpoint' key exists in the options
 		if 'sd_model_checkpoint' in options:
 			sd_model_checkpoint = options['sd_model_checkpoint']
-			configured_model_checkpoint = config["SDModel"]
+			configured_model_checkpoint = config["SDmodel"]
 			if sd_model_checkpoint != configured_model_checkpoint:
 				logging.warning("Loaded model does not match configured model in check_current_model.")
 				if message:
@@ -256,11 +254,20 @@ async def check_current_model(config, message,draw_msg):
 
 async def check_models(config):
 	async def fetch_models():
-		async with aiohttp.ClientSession() as session:
-			url = config["SDURL"] + "/sdapi/v1/sd-models"
-			async with session.get(url) as response:
-				response.raise_for_status()
-				available_models_data = await response.json()
+		async with aiohttp.ClientSession() as session1:
+			# Refresh checkpoints
+			url1 = config["SDURL"] + "/sdapi/v1/refresh-checkpoints"
+			async with session1.post(url1) as response1:
+				response1.raise_for_status()
+				status1 = await response1.text()
+				logging.info("Refreshed checkpoints")
+
+			# Fetch models
+		async with aiohttp.ClientSession() as session2:
+			url2 = config["SDURL"] + "/sdapi/v1/sd-models"
+			async with session2.get(url2) as response2:
+				response2.raise_for_status()
+				available_models_data = await response2.json()
 				logging.info("Models fetched successfully in fetch_models.")
 				return available_models_data
 
@@ -300,7 +307,7 @@ def prepare_json_payload(config, prompt, upscale):
 			"denoising_strength": 0.5,
 			"override_settings_restore_afterwards": False,
 			"override_settings": {
-				"sd_model_checkpoint": config.get("SDModel"),
+				"sd_model_checkpoint": config.get("SDmodel"),
 				"CLIP_stop_at_last_layers": config.get("SDClipSkip")
 			}
 		}

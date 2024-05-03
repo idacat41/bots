@@ -2,7 +2,7 @@
 *_message_histories_*
 **/*.log*
 **/*.pyc
-.vscode/*
+.vscode/
 vision*
 jennifer_localai/
 comfy*
@@ -12,3 +12,4 @@ workflow_*
 .devcontainer/
 function storage.py
 set_python_env.sh
+**/jaunch.json

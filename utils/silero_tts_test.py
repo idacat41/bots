@@ -74,7 +74,7 @@ async def tts(ctx):
 	import torchaudio
 
 	# speakers = model.speakers
-	speakers = ["en_56", "en_94"]
+	speakers = ["en_24","en_18", "en_4"]
 
 	# Play the audio
 	voice_client = await ctx.author.voice.channel.connect()
