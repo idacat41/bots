@@ -6,9 +6,10 @@ import io
 import discord
 import aiohttp
 import base64
+import time
 from utility_functions import *
 from PIL import Image
-import time
+
 # Token Bucket class for rate limiting
 class TokenBucket:
 	def __init__(self, capacity, refill_rate):

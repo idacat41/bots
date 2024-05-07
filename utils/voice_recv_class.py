@@ -23,7 +23,7 @@ class VoiceRecvClient(voice_recv.VoiceRecvClient):
 	from silero.tts_utils import apply_tts
 	language = 'en'
 	model_id = 'v3_en'
-	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+	device = torch.device ("cpu")   #("cuda" if torch.cuda.is_available() else "cpu")
 	silero_model, _ = torch.hub.load(repo_or_dir='snakers4/silero-models',
 							  model='silero_tts',
 							  language=language,

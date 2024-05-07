@@ -1,8 +1,4 @@
 import discord
-from discord import VoiceState
-from openai import AsyncOpenAI
-from openai import OpenAI
-from math import log
 import json
 import time
 import logging
@@ -10,18 +6,22 @@ import asyncio
 import os
 import sys
 import aiohttp
-from discord.errors import *
-# from discord import message, TextChannel, Message
-from collections import namedtuple
-# Import the utils package from a specific path '/utils/'
-sys.path.insert(0, './utils/')  # Add this path to system paths for Python to be able to find modules in it.
+import tracemalloc
+
 from utils import *
+from discord import VoiceState
+from openai import AsyncOpenAI
+from openai import OpenAI
+from math import log
+from discord.errors import *
+from collections import namedtuple
+from utils.voice_recv_class import *
+from utils.utility_functions import *
 from utils.image_gen import handle_image_generation
 from utils.image_gen import print_available_models
 from utils.interactions import handle_message_processing
-from utils.voice_recv_class import *
-from utils.utility_functions import *
-import tracemalloc
+
+sys.path.insert(0, './utils/')  # Add this path to system paths for Python to be able to find modules in it.
 tracemalloc.start()
 
 # Load existing message histories from file

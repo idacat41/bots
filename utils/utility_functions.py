@@ -143,16 +143,12 @@ async def try_generate_response(client, config, user_id, user_message_histories,
 				logging.info("Using provided prompt:")
 				logging.debug(prompt)
 				messages.append({'role': 'system', 'content': prompt})
-				response = await client.completions.create(
-					prompt=messages,
-					model=config["OpenaiModel"]
-				)
-			else:
-				# Send request to OpenAI
-				response = await client.chat.completions.create(
-					messages=messages,
-					model=config["OpenaiModel"]
-				)
+
+			# Send request to OpenAI
+			response = await client.chat.completions.create(
+				messages=messages,
+				model=config["OpenaiModel"]
+			)
 
 			logging.info("API response received.")
 			logging.debug(response)

@@ -7,11 +7,17 @@ x-base_service: &base_service
   stop_signal: SIGKILL
   tty: true
   deploy:
+  # devices:        
+  #   - /dev/nvidia0:/dev/nvidia0
+  #   - /dev/nvidiactl:/dev/nvidiactl
+  #   - /dev/nvidia-modeset:/dev/nvidia-modeset
+  #   - /dev/nvidia-uvm:/dev/nvidia-uvm
+  #   - /dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools
     resources:
       reservations:
         devices:
           - driver: nvidia
-            capabilities: [compute, utility]
+            capabilities: [gpu]
 
 name: jennifer
 
@@ -20,14 +26,22 @@ services:
     # build:
     #   dockerfile: localai-subsystem-dockerfile-gpu
       # no_cache: true
+    # devices:
+    #   - /dev/nvidia0:/dev/nvidia0
+    #   - /dev/nvidiactl:/dev/nvidiactl
+    #   - /dev/nvidia-modeset:/dev/nvidia-modeset
+    #   - /dev/nvidia-uvm:/dev/nvidia-uvm
+    #   - /dev/nvidia-uvm-tools:/dev/nvidia-uvm-tools
     deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    image: lunamidori5/midori_ai_subsystem_localai_gpu:master
+      # resources:
+      #   reservations:
+      #     devices:
+      #       - driver: nvidia
+      #         count: all
+      #         capabilities: [gpu]
+
+    image: lunamidori5/midori_ai_subsystem_localai_cpu:master
+    pull_policy: always # always pull the latest
     tty: true # enable colorized logs
     restart: always # should this be on-failure ?
     ports:
@@ -47,7 +61,7 @@ services:
     tty: true # enable colorized logs
     restart: always # should this be on-failure ?
     environment:
-      - CLI_ARGS=--allow-code --medvram --xformers --enable-insecure-extension-access --api
+      - CLI_ARGS=--allow-code --lowvram --enable-insecure-extension-access --api
 
   init:
     image: busybox
